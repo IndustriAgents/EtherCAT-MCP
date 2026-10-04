@@ -7,9 +7,12 @@ the EtherCAT MCP server through its mock transport (``ETHERCAT_BACKEND=mock``):
 
 * the AL state machine (INIT -> PREOP -> SAFEOP -> OP, invalid transitions are
   refused with AL status 0x0011),
-* process data: inputs readable in SAFEOP/OP, outputs applied only in OP and
-  cleared when a slave leaves OP. The EL2008 outputs are wired back to the
-  EL1008 inputs, so a write can be read back,
+* process data: inputs readable in SAFEOP/OP; outputs applied only in OP and
+  dropped to 0 when a slave leaves OP. Like a real master's process image,
+  the output image itself is NOT cleared (not by leaving OP, not by a scan):
+  a slave that re-enters OP applies whatever the image still holds unless the
+  master clears it (``clear_outputs``). The EL2008 outputs are wired back to
+  the EL1008 inputs, so a write can be read back,
 * CoE (SDO) objects on the EL3102, with SDO abort codes for unknown objects,
   read-only objects and wrong lengths. The other three terminals have no
   mailbox, as on real hardware.
@@ -91,6 +94,7 @@ class MockConfig:
     port: int = 6700
     update_interval: float = 1.0
     verbose: bool = False
+    power_on_state: str = "INIT"
 
 
 @dataclass
@@ -107,12 +111,18 @@ class MockSlave:
     state: int = INIT
     al_status_code: int = AL_NO_ERROR
     inputs: bytearray = field(default_factory=bytearray)
-    outputs: bytearray = field(default_factory=bytearray)
+    outputs: bytearray = field(default_factory=bytearray)  # the master's output image for this slave
+    applied: bytearray = field(default_factory=bytearray)  # what the slave actually drives
     objects: dict[tuple[int, int], SdoEntry] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.inputs = bytearray(self.input_size)
         self.outputs = bytearray(self.output_size)
+        self.applied = bytearray(self.output_size)
+
+    def apply_outputs(self) -> None:
+        """Outputs only drive anything in OP; anywhere else they are at their safe state (0)."""
+        self.applied[:] = self.outputs if self.state == OP else bytes(len(self.applied))
 
     @property
     def state_name(self) -> str:
@@ -186,6 +196,12 @@ class EthercatMockServer:
     def __init__(self, config: MockConfig, slaves: list[MockSlave] | None = None) -> None:
         self.config = config
         self.slaves = slaves if slaves is not None else default_slaves()
+        power_on = STATE_CODES.get(config.power_on_state.upper())
+        if power_on is None:
+            raise ValueError(f"Unknown power-on state {config.power_on_state!r}")
+        for slave in self.slaves:
+            slave.state = power_on
+            slave.apply_outputs()
         self._server: asyncio.base_events.Server | None = None
         self._update_task: asyncio.Task[None] | None = None
         self._started = time.monotonic()
@@ -244,7 +260,7 @@ class EthercatMockServer:
         outputs = next((s for s in self.slaves if s.name == "EL2008"), None)
         inputs = next((s for s in self.slaves if s.name == "EL1008"), None)
         if outputs is not None and inputs is not None:
-            inputs.inputs[:] = outputs.outputs if outputs.state == OP else bytes(len(inputs.inputs))
+            inputs.inputs[:] = outputs.applied
 
     def _slave(self, request: dict[str, Any]) -> MockSlave:
         position = _int(request, "position", maximum=len(self.slaves) - 1 if self.slaves else 0)
@@ -263,10 +279,9 @@ class EthercatMockServer:
                 f"{slave.state_name} -> {STATE_NAMES[target]} (AL status 0x0011); it stays in {slave.state_name}",
                 **slave.state_entry(),
             )
-        if slave.state == OP:
-            slave.outputs[:] = bytes(len(slave.outputs))  # outputs fall back to their safe state
         slave.state = target
         slave.al_status_code = AL_NO_ERROR
+        slave.apply_outputs()  # leaving OP drops them to 0; entering OP applies the image as it is
 
     def _mailbox(self, slave: MockSlave) -> None:
         if not slave.has_mailbox:
@@ -304,10 +319,11 @@ class EthercatMockServer:
             return {"mock": True, "slaves": len(self.slaves)}
         if op == "scan":
             # Like SOEM's config_init: reset every slave to INIT, then request PRE-OP.
+            # The output image is not cleared, as SOEM does not clear the master's io_map.
             for slave in self.slaves:
-                slave.outputs[:] = bytes(len(slave.outputs))
                 slave.state = PREOP
                 slave.al_status_code = AL_NO_ERROR
+                slave.apply_outputs()
             self._loopback()
             return [slave.describe() for slave in self.slaves]
         if op == "read_state":
@@ -365,8 +381,16 @@ class EthercatMockServer:
                     f"offset {offset} with length {len(data)} is out of range"
                 )
             slave.outputs[offset : offset + len(data)] = bytes(data)
+            slave.apply_outputs()
             self._loopback()
             return {"position": slave.position, "written_bytes": len(data), "state": slave.state_name}
+        if op == "clear_outputs":
+            # The master zeroes this slave's part of its output image (allowed in any state).
+            slave = self._slave(request)
+            slave.outputs[:] = bytes(len(slave.outputs))
+            slave.apply_outputs()
+            self._loopback()
+            return {"position": slave.position, "cleared_bytes": len(slave.outputs), "state": slave.state_name}
         if op == "read_sdo":
             slave = self._slave(request)
             self._mailbox(slave)
@@ -462,6 +486,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--verbose", action="store_true", default=_env_bool("MOCK_ETHERCAT_VERBOSE"), help="log every request"
     )
+    parser.add_argument(
+        "--power-on-state",
+        choices=sorted(STATE_CODES),
+        type=str.upper,
+        default=os.getenv("MOCK_ETHERCAT_POWER_ON_STATE", "INIT").upper(),
+        help="AL state the slaves start in (default INIT; SAFEOP or OP simulates a segment another master runs)",
+    )
     args = parser.parse_args(argv)
     if args.update_interval <= 0:
         parser.error("--update-interval must be greater than 0")
@@ -490,7 +521,13 @@ def main(argv: list[str] | None = None) -> None:
         stream=sys.stderr,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    config = MockConfig(host=args.host, port=args.port, update_interval=args.update_interval, verbose=args.verbose)
+    config = MockConfig(
+        host=args.host,
+        port=args.port,
+        update_interval=args.update_interval,
+        verbose=args.verbose,
+        power_on_state=args.power_on_state,
+    )
     try:
         asyncio.run(run_server(config))
     except KeyboardInterrupt:  # pragma: no cover

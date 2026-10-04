@@ -70,6 +70,37 @@ def test_process_data_rules_and_loopback() -> None:
     assert len(ok(server, op="read_pdo", position=3, offset=2, length=2)["raw_data_hex"]) == 4
 
 
+def test_output_image_survives_like_a_masters_io_map() -> None:
+    """Like SOEM, the mock never clears the output image by itself: the master has to."""
+    server = mock()
+    ok(server, op="scan")
+    for state in ("SAFEOP", "OP"):
+        ok(server, op="set_state", position=2, state=state)
+    ok(server, op="set_state", position=1, state="SAFEOP")
+    ok(server, op="write_pdo", position=2, data=[0xFF])
+    ok(server, op="set_state", position=2, state="SAFEOP")
+    assert ok(server, op="read_pdo", position=1)["raw_data_hex"] == "00"  # not applied outside OP
+    ok(server, op="set_state", position=2, state="OP")
+    assert ok(server, op="read_pdo", position=1)["raw_data_hex"] == "ff"  # stale image re-applied
+    assert ok(server, op="clear_outputs", position=2)["cleared_bytes"] == 1
+    assert ok(server, op="read_pdo", position=1)["raw_data_hex"] == "00"
+    ok(server, op="write_pdo", position=2, data=[0x0F])
+    ok(server, op="set_state", position=2, state="INIT")
+    ok(server, op="scan")  # a scan does not clear the image either
+    for state in ("SAFEOP", "OP"):
+        ok(server, op="set_state", position=2, state=state)
+    ok(server, op="set_state", position=1, state="SAFEOP")
+    assert ok(server, op="read_pdo", position=1)["raw_data_hex"] == "0f"
+
+
+def test_power_on_state() -> None:
+    server = EthercatMockServer(MockConfig(port=0, power_on_state="OP"))
+    assert {s["state"] for s in ok(server, op="read_state")} == {"OP"}
+    with pytest.raises(ValueError, match="power-on state"):
+        EthercatMockServer(MockConfig(port=0, power_on_state="BOGUS"))
+    assert parse_args(["--power-on-state", "safeop"]).power_on_state == "SAFEOP"
+
+
 def test_sdo() -> None:
     server = mock()
     err(server, "is in INIT", op="read_sdo", position=3, index=0x1000)
