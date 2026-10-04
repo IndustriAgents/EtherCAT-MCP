@@ -14,7 +14,7 @@ from typing import Any
 from dotenv import dotenv_values, load_dotenv
 
 from ._version import __version__
-from .config import GATE_VARIABLES, ConfigError, EthercatConfig
+from .config import OWN_EXTRA_VARIABLES, PROTECTED_VARIABLES, ConfigError, EthercatConfig
 
 logger = logging.getLogger("ethercat_mcp")
 
@@ -32,10 +32,14 @@ settings (environment variables, or a .env file):
   ETHERCAT_MOCK_HOST / _PORT     mock slave address for ETHERCAT_BACKEND=mock (default 127.0.0.1:6700)
   SLAVE_MAP_FILE                 JSON file of slave aliases
   ETHERCAT_ESI_PATH              directory searched for ESI files
+  ETHERCAT_ESI_MAX_MB            largest ESI file load_esi_file parses (default 16)
 
-Variables already set in the environment win over the .env file. The gates
-(ETHERCAT_WRITES_ENABLED, ETHERCAT_STATE_CHANGE_ENABLED) are only read from the
-real environment or --env-file, never from an automatically found ./.env.
+The only .env read automatically is ethercat-python/.env of a source checkout
+(never the working directory or a parent; none for an installed package).
+Variables already set in the environment win over it, and it can only set
+ETHERCAT_* and SLAVE_MAP_FILE, never ETHERCAT_WRITES_ENABLED,
+ETHERCAT_STATE_CHANGE_ENABLED, ETHERCAT_PD_WATCHDOG_MS or ETHERCAT_EXPECTED_WKC:
+those come only from the real environment or --env-file.
 sudo drops the caller's environment, so under sudo put the settings on the
 command line (sudo ETHERCAT_INTERFACE=eth0 .venv/bin/ethercat-mcp) or use
 --env-file.
@@ -54,8 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--env-file",
         type=Path,
         metavar="PATH",
-        help="load settings from PATH instead of ./.env (the .env in the current directory); "
-        "unlike ./.env, this file may also turn the write and state-change gates on",
+        help="load settings from PATH instead of the project's own .env; unlike that file, "
+        "it may also set the write and state-change gates and the safety limits",
     )
     parser.add_argument(
         "--print-config",
@@ -65,13 +69,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_env_file(env_file: Path | None) -> Path | None:
-    """Load ``env_file``, or ``./.env`` if it exists. Never searches parent directories.
+def project_env_file() -> Path | None:
+    """The only .env the server loads by itself: ``ethercat-python/.env`` of a source checkout.
 
-    An explicit ``--env-file`` is trusted like the environment. A ``./.env`` that is
-    merely found may set connection settings but never the safety gates: with a
-    direct venv launch the working directory is the MCP client's project, which may
-    not be trusted. Gate variables in it are ignored with a warning.
+    It is found from this file's location (``ethercat-python/src/ethercat_mcp``), never
+    from the working directory or a parent directory (suite rule 3c). An installed
+    package (site-packages) has no implicit .env at all.
+    """
+    package = Path(__file__).resolve().parent
+    project = package.parent.parent
+    if package.parent.name == "src" and (project / "pyproject.toml").is_file():
+        return project / ".env"
+    return None
+
+
+def load_env_file(env_file: Path | None) -> Path | None:
+    """Load ``--env-file``, or else the project's own ``.env`` (see ``project_env_file``).
+
+    An explicit ``--env-file`` is trusted like the environment. The implicit ``.env``
+    may only set this server's own settings (``ETHERCAT_*`` and ``SLAVE_MAP_FILE``),
+    and never the safety switches or the settings that weaken a safety check
+    (``PROTECTED_VARIABLES``). Keys are compared case-insensitively, as Windows
+    upper-cases environment variable names. Anything else is ignored with a warning.
     """
     if env_file is not None:
         path = env_file.expanduser()
@@ -79,20 +98,25 @@ def load_env_file(env_file: Path | None) -> Path | None:
             raise ConfigError(f"--env-file {env_file} does not exist")
         load_dotenv(path, override=False)
         return path
-    candidate = Path.cwd() / ".env"
-    if not candidate.is_file():
+    candidate = project_env_file()
+    if candidate is None or not candidate.is_file():
         return None
-    for key, value in dotenv_values(candidate).items():
+    for key, value in dotenv_values(candidate).items():  # handles "export " prefixes and quotes
         if value is None:
             continue
-        if key in GATE_VARIABLES:
+        name = key.strip().upper()
+        if name in PROTECTED_VARIABLES:
             logger.warning(
-                "Ignoring %s from %s: safety switches are only read from the process environment or --env-file",
+                "Ignoring %s from %s: safety switches and safety limits are only read from the process "
+                "environment or --env-file",
                 key,
                 candidate,
             )
             continue
-        os.environ.setdefault(key, value)
+        if not (name.startswith("ETHERCAT_") or name in OWN_EXTRA_VARIABLES):
+            logger.warning("Ignoring %s from %s: it is not an ethercat-mcp setting", key, candidate)
+            continue
+        os.environ.setdefault(name, value)
     return candidate
 
 
@@ -136,14 +160,12 @@ def main(argv: list[str] | None = None) -> None:
         "enabled" if config.state_change_enabled else "disabled",
         env_file or "none",
     )
-    server = EthercatMCPServer(config)
+    # The lifespan closes the master on a normal exit, and the signal handler on SIGTERM,
+    # SIGHUP and SIGINT; both are bounded so that a stuck device call cannot block shutdown.
     try:
-        server.run(protocol_out)
+        EthercatMCPServer(config).run(protocol_out)
     except KeyboardInterrupt:
         pass
-    finally:
-        # Normally done by the lifespan already; close() is idempotent.
-        server.master.backend.close()
 
 
 if __name__ == "__main__":

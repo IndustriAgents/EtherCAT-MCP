@@ -14,9 +14,13 @@ from pathlib import Path
 
 BACKENDS = ("pysoem", "mock")
 
-# Safety switches. Suite rule: they are honoured only from the real process environment or an
+# Safety switches. Suite rule 3: they are honoured only from the real process environment or an
 # explicit --env-file, never from a .env file found automatically (see cli.load_env_file).
 GATE_VARIABLES = ("ETHERCAT_WRITES_ENABLED", "ETHERCAT_STATE_CHANGE_ENABLED")
+# Settings that weaken a safety check are treated like the gates.
+PROTECTED_VARIABLES = (*GATE_VARIABLES, "ETHERCAT_PD_WATCHDOG_MS", "ETHERCAT_EXPECTED_WKC")
+# Suite rule 3b: what an automatically found .env may set besides ETHERCAT_* (minus the above).
+OWN_EXTRA_VARIABLES = ("SLAVE_MAP_FILE",)
 
 _TRUE = {"1", "true", "yes", "y", "on"}
 _FALSE = {"0", "false", "no", "n", "off", ""}
@@ -76,6 +80,7 @@ class EthercatConfig:
     esi_base_path: Path | None = None
     mock_host: str = "127.0.0.1"
     mock_port: int = 6700
+    esi_max_mb: int = 16
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> EthercatConfig:
@@ -114,11 +119,17 @@ class EthercatConfig:
             esi_base_path=_path(env, "ETHERCAT_ESI_PATH"),
             mock_host=mock_host,
             mock_port=_int(env, "ETHERCAT_MOCK_PORT", 6700, minimum=1, maximum=65535),
+            esi_max_mb=_int(env, "ETHERCAT_ESI_MAX_MB", 16, minimum=1, maximum=512),
         )
 
     @property
     def is_mock(self) -> bool:
         return self.backend == "mock"
+
+    @property
+    def call_deadline_s(self) -> float:
+        """Overall deadline for one device call (suite rule 12): generous next to SOEM's own timeouts."""
+        return 4 * self.timeout_us / 1_000_000 + 10.0
 
     @property
     def state_changes_allowed(self) -> bool:
