@@ -226,6 +226,7 @@ class FakeSlave:
         self.out_offset: int | None = None
         self.in_offset: int | None = None
         self.sdo_calls: list[tuple] = []
+        self.timeouts_seen: list[int] = []
 
     @property
     def al_status(self) -> int:
@@ -273,6 +274,7 @@ class FakeSlave:
 
     def sdo_read(self, index, subindex, size=0, ca=False, *, release_gil=None):
         self.sdo_calls.append(("read", index, subindex, release_gil))
+        self.timeouts_seen.append(self._master.sdo_read_timeout)
         self._mailbox()
         if (index, subindex) not in self._dev.objects:
             raise SdoError(self._pos + 1, index, subindex, 0x06020000, "Object does not exist")
@@ -281,6 +283,7 @@ class FakeSlave:
     def sdo_write(self, index, subindex, data, ca=False, *, release_gil=None):
         assert isinstance(data, bytes)
         self.sdo_calls.append(("write", index, subindex, data, release_gil))
+        self.timeouts_seen.append(self._master.sdo_write_timeout)
         self._mailbox()
         if (index, subindex) not in self._dev.objects:
             raise SdoError(self._pos + 1, index, subindex, 0x06020000, "Object does not exist")
@@ -329,6 +332,8 @@ class FakeMaster:
         self.manual_state_change = 0
         self.state = NONE_STATE
         self.context_initialized = False
+        self.sdo_read_timeout = 700000  # PySOEM's defaults (cdef public int), in microseconds
+        self.sdo_write_timeout = 700000
 
     def open(self, ifname, ifname_red=None):
         self._bus.calls.append(("open", ifname))

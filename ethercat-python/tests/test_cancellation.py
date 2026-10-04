@@ -414,3 +414,133 @@ def test_mock_bridge_checks_the_token_after_connecting(proxy: LoggingProxy, monk
     assert info.value.outcome == "not_sent"
     time.sleep(0.3)
     assert "write_sdo" not in proxy.arrived
+
+
+# -- review round 4: mapping is a send point; long SOEM operations respect the deadline -------
+
+
+def test_a_deadline_during_mapping_is_unknown_and_no_state_request_follows() -> None:
+    """config_map writes SM, FMMU and watchdog registers: once it ran, the call is not "not sent"."""
+    from ethercat_mcp.ec_master import CallToken
+
+    config = EthercatConfig.from_env({"ETHERCAT_INTERFACE": "fake0", "ETHERCAT_TIMEOUT": "100000", **GATES})
+    fake = FakePysoem()
+    backend = PysoemBackend(config, pysoem_module=fake)
+    backend.scan()
+    token = CallToken(30)
+    master = fake.masters[0]
+    config_map = master.config_map
+
+    def map_then_deadline():
+        size = config_map()  # the registers are written...
+        token.cancel("its overall deadline passed")  # ...and then the deadline passes
+        return size
+
+    master.config_map = map_then_deadline
+    try:
+        with pytest.raises(EthercatMasterError, match="may have been applied") as info:
+            backend.set_state(2, SAFEOP_STATE, token=token)
+        assert info.value.outcome == "unknown"
+        assert not any(call[0] == "slave.write_state" for call in fake.bus.calls)
+    finally:
+        backend.close()
+
+
+@pytest.mark.anyio
+async def test_facade_reports_unknown_when_mapping_outlasts_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ethercat_mcp import ec_master
+
+    config = EthercatConfig.from_env({"ETHERCAT_INTERFACE": "fake0", "ETHERCAT_TIMEOUT": "100000", **GATES})
+    fake = FakePysoem()
+    backend = PysoemBackend(config, pysoem_module=fake)
+    backend.scan()
+    master = EthercatMaster(config, backend=backend)
+    monkeypatch.setattr(EthercatConfig, "call_deadline_s", property(lambda self: 0.3))
+    monkeypatch.setattr(ec_master, "MAPPING_EXTRA_S", 0.0)
+    monkeypatch.setattr(ec_master, "MIN_LEFT_FOR_MAPPING_S", 0.0)
+    soem_master = fake.masters[0]
+    config_map = soem_master.config_map
+
+    def slow_map():
+        time.sleep(0.8)  # SOEM cannot be interrupted
+        return config_map()
+
+    soem_master.config_map = slow_map
+    try:
+        with pytest.raises(EthercatMasterError, match="did not finish within") as info:
+            await master.set_slave_state(2, SAFEOP_STATE)
+        assert info.value.outcome == "unknown"
+        time.sleep(1.0)  # the abandoned worker finishes mapping; it must not request the state
+        assert not any(call[0] == "slave.write_state" for call in fake.bus.calls)
+    finally:
+        await master.close()
+
+
+@pytest.mark.parametrize("operation", ["scan", "mapping"])
+def test_uninterruptible_operations_need_time_left(operation: str) -> None:
+    from ethercat_mcp.ec_master import CallToken
+
+    config = EthercatConfig.from_env({"ETHERCAT_INTERFACE": "fake0", "ETHERCAT_TIMEOUT": "100000", **GATES})
+    fake = FakePysoem()
+    backend = PysoemBackend(config, pysoem_module=fake)
+    try:
+        if operation == "mapping":
+            backend.scan()
+        calls_before = len(fake.bus.calls)
+        token = CallToken(2.0)  # less than the 10 s config_init and config_map are given
+        with pytest.raises(EthercatMasterError, match="will not be sent later") as info:
+            if operation == "scan":
+                backend.scan(token=token)
+            else:
+                backend.set_state(2, SAFEOP_STATE, token=token)
+        assert info.value.outcome == "not_sent"
+        assert not any(call[0] in ("config_init", "config_map") for call in fake.bus.calls[calls_before:])
+    finally:
+        backend.close()
+
+
+def test_sdo_timeouts_are_clamped_to_the_time_left() -> None:
+    from ethercat_mcp.ec_master import DEFAULT_SDO_TIMEOUT_US, CallToken
+
+    config = EthercatConfig.from_env({"ETHERCAT_INTERFACE": "fake0", "ETHERCAT_TIMEOUT": "100000", **GATES})
+    fake = FakePysoem()
+    backend = PysoemBackend(config, pysoem_module=fake)
+    try:
+        backend.scan()
+        slave = backend._slaves[3]
+        backend.write_sdo(3, 0x8000, 6, b"\x01", token=CallToken(0.5))
+        backend.read_sdo(3, 0x8000, 6, token=CallToken(0.4))
+        assert all(timeout <= 450_000 for timeout in slave.timeouts_seen), slave.timeouts_seen
+        assert fake.masters[0].sdo_write_timeout == DEFAULT_SDO_TIMEOUT_US  # restored afterwards
+        backend.write_sdo(3, 0x8000, 6, b"\x01", token=CallToken(30))
+        assert slave.timeouts_seen[-1] == DEFAULT_SDO_TIMEOUT_US
+        with pytest.raises(EthercatMasterError, match="will not be sent later") as info:
+            backend.write_sdo(3, 0x8000, 6, b"\x02", token=CallToken(0.1))
+        assert info.value.outcome == "not_sent"
+        assert fake.device(3).objects[(0x8000, 6)][0] == b"\x01"
+    finally:
+        backend.close()
+
+
+@pytest.mark.anyio
+async def test_stdin_eof_cancels_pending_calls_and_refuses_new_ones(tmp_path: Path) -> None:
+    """The wiring behind the stdio test, without its timing: EOF -> shutdown_calls()."""
+    from ethercat_mcp.ec_master import CallToken
+    from ethercat_mcp.server import EthercatMCPServer, _NotifyOnEof
+
+    config = EthercatConfig.from_env({"ETHERCAT_BACKEND": "mock", "ETHERCAT_MOCK_PORT": "9", **GATES})
+    server = EthercatMCPServer(config)
+    pending = CallToken(30)
+    server.master._pending.add(pending)
+
+    async def lines():
+        yield '{"jsonrpc": "2.0", "method": "notifications/initialized"}\n'
+
+    seen = [line async for line in _NotifyOnEof(lines(), server._client_disconnected)]
+    assert len(seen) == 1
+    assert server.client_gone is True
+    assert pending.cancelled and not pending.sent
+    with pytest.raises(EthercatMasterError, match="will not be sent later"):
+        pending.begin_send()
+    with pytest.raises(EthercatMasterError, match="Not sent: the MCP client disconnected"):
+        await server.master.write_sdo(3, 0x8000, 6, b"\x01")

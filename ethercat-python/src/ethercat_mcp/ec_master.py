@@ -73,6 +73,14 @@ REFUSAL_AL_CODES = frozenset(
 SCAN_EXTRA_S = 30.0
 MAPPING_EXTRA_S = 20.0
 
+# SOEM cannot interrupt config_init (EEPROM reads of every slave) or config_map (CoE reads of
+# the PDO assignment, register writes). They only start with at least this much deadline left.
+MIN_LEFT_FOR_SCAN_S = 10.0
+MIN_LEFT_FOR_MAPPING_S = 10.0
+# An SDO transfer needs at least this much; its SOEM timeout is clamped to the time left.
+MIN_LEFT_FOR_SDO_S = 0.2
+DEFAULT_SDO_TIMEOUT_US = 700_000
+
 # Broadcast AL-state reads before a scan: a lost frame reads as 0, so OR several.
 _SEGMENT_STATE_READS = 3
 
@@ -187,11 +195,27 @@ class CallToken:
             if self._stopped():
                 raise self._error()
 
-    def begin_send(self) -> None:
-        """Pass a send point: raise instead if the call may no longer send anything."""
+    def begin_send(self, min_remaining_s: float = 0.0) -> None:
+        """Pass a send point: raise instead if the call may no longer send anything.
+
+        ``min_remaining_s`` refuses to start an operation that SOEM cannot interrupt
+        (config_init, config_map) when too little of the deadline is left for it to
+        finish: it would otherwise keep sending after the deadline.
+        """
         with self._lock:
             if self._stopped():
                 raise self._error()
+            remaining = self.remaining()
+            if min_remaining_s and remaining is not None and remaining < min_remaining_s:
+                if self.sent:
+                    raise unknown_outcome(
+                        f"The call stopped part way: only {remaining:.1f} s of its deadline was left to start an "
+                        f"operation that needs {min_remaining_s:.0f} s"
+                    )
+                raise EthercatMasterError(
+                    f"Not sent: only {max(remaining, 0):.1f} s of the call's deadline was left, and this operation "
+                    f"needs {min_remaining_s:.0f} s to finish. It will not be sent later."
+                )
             self.sent = True
 
 
@@ -662,7 +686,7 @@ class PysoemBackend:
                 "reset_live_segment": bool(bits & (SAFEOP_STATE | OP_STATE)),
             }
             # Send point: stopping process data and config_init change what the slaves see.
-            token.begin_send()
+            token.begin_send(MIN_LEFT_FOR_SCAN_S)
             self._stop_cycle()
             self._layouts = {}
             self._mapped = False
@@ -819,11 +843,36 @@ class PysoemBackend:
             return f"{where} failed: {kind} {code}: {getattr(exc, 'desc', '')}".rstrip()
         return f"{where} failed: {kind}: {exc}"
 
+    @contextmanager
+    def _sdo_timeouts(self, token: CallToken, payload_len: int = 0) -> Iterator[None]:
+        """Clamp SOEM's SDO timeouts to the time left, so a transfer cannot outlive the deadline.
+
+        SOEM applies the timeout to each mailbox exchange, and a segmented download has
+        one exchange per segment, so a longer payload gets a proportionally shorter one.
+        """
+        master = self._master
+        remaining = token.remaining()
+        if remaining is None:
+            yield
+            return
+        exchanges = 1 + payload_len // 64  # conservative: mailboxes are rarely smaller than 80 bytes
+        timeout_us = int(min(DEFAULT_SDO_TIMEOUT_US, max(remaining - 0.05, 0.0) * 1_000_000 / exchanges))
+        master.sdo_read_timeout = master.sdo_write_timeout = max(timeout_us, 1000)
+        try:
+            yield
+        finally:
+            master.sdo_read_timeout = master.sdo_write_timeout = DEFAULT_SDO_TIMEOUT_US
+
     def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes:
-        with locked(self._lock, _token(token)):
+        token = _token(token)
+        with locked(self._lock, token):
             slave = self._require_slave(position)
+            remaining = token.remaining()
+            if remaining is not None and remaining < MIN_LEFT_FOR_SDO_S:
+                raise EthercatMasterError("Too little of the call's deadline is left for an SDO upload")
             try:
-                raw = slave.sdo_read(index, subindex, release_gil=True)
+                with self._sdo_timeouts(token):
+                    raw = slave.sdo_read(index, subindex, release_gil=True)
             except Exception as exc:
                 raise EthercatMasterError(self._sdo_error("read", position, index, subindex, exc)) from exc
             return bytes(raw)
@@ -833,9 +882,10 @@ class PysoemBackend:
         with locked(self._lock, token):
             slave = self._require_slave(position)
             payload = bytes(data)
-            token.begin_send()  # send point: the download goes out now
+            token.begin_send(MIN_LEFT_FOR_SDO_S)  # send point: the download goes out now
             try:
-                slave.sdo_write(index, subindex, payload, release_gil=True)
+                with self._sdo_timeouts(token, len(payload)):
+                    slave.sdo_write(index, subindex, payload, release_gil=True)
             except Exception as exc:
                 message = self._sdo_error("write", position, index, subindex, exc)
                 kind = type(exc).__name__
@@ -871,7 +921,8 @@ class PysoemBackend:
             mapped_now = False
             if state in (SAFEOP_STATE, OP_STATE):
                 if not self._mapped:
-                    token.begin_send()  # send point: mapping writes sync-manager, FMMU and watchdog registers
+                    # send point: mapping writes sync-manager, FMMU and watchdog registers
+                    token.begin_send(MIN_LEFT_FOR_MAPPING_S)
                     mapped_now = self._ensure_mapped()
                 self._require_cycling()
             self._master.read_state()

@@ -68,7 +68,9 @@ A change that breaks one of these needs a reason in the pull request:
    lock through `locked()` and call `token.begin_send()` immediately before
    anything that can change a device, so a call that was cancelled (deadline,
    client cancel, client disconnect) before its send point ends `not_sent` and
-   never sends later. Nothing may hang.
+   never sends later. An operation SOEM cannot interrupt passes
+   `begin_send(min_remaining_s=...)` so that it never starts too close to the
+   deadline. Nothing may hang.
 6. **Strict arguments.** Positions, offsets, indexes and byte values are strict
    integers (`pydantic.StrictInt`): a boolean is never a number.
 7. **A mock for the protocol.** If you add a tool, make it work against

@@ -333,6 +333,10 @@ strings such as `"0x10"`:
   closes), the token is cancelled first: a call that had not reached its send
   point ends `not_sent` and is never sent afterwards, even if it was queued
   behind another call; one that had is `unknown`. A read ends with an error.
+  SOEM cannot interrupt `config_init` or `config_map`, so they only start with
+  at least 10 s of the deadline left, and the SDO timeouts are clamped to the
+  time left (split across the segments of a longer download), so a transfer
+  does not outlive its call.
   On disconnect, new calls are refused, and the master is still closed (INIT
   requested if process data ran). Shutdown is bounded the same way.
 - **Watchdog.** When the image is mapped, the process-data watchdog of every
