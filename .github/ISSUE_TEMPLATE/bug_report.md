@@ -28,14 +28,15 @@ paste the { success, data, error, meta } envelope, or the error
 ```
 
 **What was on the other end?**
-- [ ] Nothing — a tool that does not open an interface (`ping`, `list_slaves`, `load_esi_file`, ...)
-- [ ] The mock slave from this repo
-- [ ] Real EtherCAT slaves — vendor, model, and ESI revision:
+- [ ] Nothing — a tool that does not touch the bus (`ping`, `list_slaves`, `load_esi_file`, ...)
+- [ ] The mock slave from this repo (`ETHERCAT_BACKEND=mock`, `meta.backend: "mock"`)
+- [ ] Real EtherCAT slaves (`meta.backend: "pysoem"`) — vendor, model, and ESI revision:
 
 **Environment**
 - OS:
 - Python version:
-- `ETHERCAT_INTERFACE`, and how raw-socket access was granted (root / `setcap` capabilities / n/a):
+- `ethercat-mcp --version`:
+- `ETHERCAT_BACKEND`, `ETHERCAT_INTERFACE`, and how raw-socket access was granted (root / `setcap` capabilities / n/a):
 - Commit SHA (or the IndustriConnect commit, if you run it as `EtherCAT-Project`):
 
 **Additional context**

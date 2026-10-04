@@ -23,14 +23,15 @@ ships it as the `EtherCAT-Project` git submodule, which tracks this repo's
 
 ```text
 EtherCAT-MCP/                  # IndustriConnect mounts this as EtherCAT-Project/
-├── ethercat-python/           # the MCP server: pyproject.toml + src/ethercat_mcp/
-├── ethercat-mock-slave/       # mock slave (TCP/JSON simulator) + Dockerfile
+├── ethercat-python/           # the MCP server: pyproject.toml + src/ethercat_mcp/ + tests/
+├── ethercat-mock-slave/       # mock slaves (TCP/JSON simulator) + Dockerfile + tests/
 ├── .github/                   # CI, issue/PR templates, IndustriConnect notification
 └── README.md
 ```
 
 Each of the two folders is its own [`uv`](https://docs.astral.sh/uv/) project
-with a committed `uv.lock`.
+with a committed `uv.lock`. `pytest` and `ruff` are in each project's `dev`
+dependency group, which `uv sync` installs.
 
 ## What holds the suite together
 
@@ -38,18 +39,20 @@ A change that breaks one of these needs a reason in the pull request:
 
 1. **One response envelope.** Every tool returns
    `{ success, data, error, meta }`, the same as every other IndustriConnect
-   server. (`read_sdo` and `write_sdo` still break this for an `index` that is
-   not a number, as noted in the README's
-   [known limitations](README.md#known-limitations).)
-2. **Writes are gated.** Tools that write PDOs or SDOs go through
+   server, also for invalid arguments: validate inputs and return
+   `success: false` with the reason rather than raising. `meta.backend` names
+   the backend that answered.
+2. **Read-only by default.** Tools that write PDOs or SDOs go through
    `ETHERCAT_WRITES_ENABLED`, and slave state changes go through
-   `ETHERCAT_STATE_CHANGE_ENABLED`. A new tool that can change equipment must
-   use the same gates. (The suite's rule is read-only by default. Here,
-   `ETHERCAT_WRITES_ENABLED` still defaults to `true`, as noted in the README's
-   [known limitations](README.md#known-limitations).)
-3. **A mock for the protocol.** If you add a tool, think about how it can be
-   exercised without a plant. The EtherCAT mock does not speak to the server
-   yet, so closing that gap is welcome work.
+   `ETHERCAT_STATE_CHANGE_ENABLED`. Both default to `false`. A new tool that
+   can change equipment must use the same gates.
+3. **Never report what did not happen.** A tool returns `success: true` only if
+   the bus (or the mock) confirmed the operation, and never returns made-up
+   device data. If something is not implemented, say so with
+   `success: false`.
+4. **A mock for the protocol.** If you add a tool, make it work against
+   `ethercat-mock-slave` through the mock transport (`ETHERCAT_BACKEND=mock`)
+   and add it to the end-to-end test.
 
 ## Getting set up
 
@@ -60,13 +63,10 @@ uv sync
 ```
 
 `uv run ethercat-mcp` starts the server, which then waits for an MCP client on
-stdin. To talk to it, use the MCP Inspector as shown under [Checks](#checks).
-Opening an interface needs raw-socket privileges (root, or `CAP_NET_RAW` and
-`CAP_NET_ADMIN` on Linux; the README's
-[Quick start](README.md#quick-start) shows both ways) and a NIC wired to an
-EtherCAT segment. Without either, the server still starts. `ping`,
-`get_master_status`, `list_slaves` and `load_esi_file` work, and the bus tools
-return `success: false` with the reason.
+stdin (`uv run ethercat-mcp --help` lists the settings). Opening an interface
+needs raw-socket privileges (root, or `CAP_NET_RAW` and `CAP_NET_ADMIN` on
+Linux; the README's [Real bus](README.md#real-bus) section shows both ways) and
+a NIC wired to an EtherCAT segment. Without either, use the mock.
 
 The mock slave runs on its own. From `ethercat-python/`:
 
@@ -78,22 +78,33 @@ uv run ethercat-mock-slave          # 127.0.0.1:6700, see --help for --host/--po
 
 ## Checks
 
-There is no automated test suite yet. CI (`.github/workflows/ci.yml`) runs
-these checks, and you can run the same ones locally from the repository root:
+CI (`.github/workflows/ci.yml`) runs these, and you can run the same ones
+locally from the repository root:
 
 ```bash
 cd ethercat-python
 uv sync --locked
+uv run --locked ruff check .
+uv run --locked ruff format --check .
 uv run --locked python -m compileall -q src
-uv run --locked python -c "import ethercat_mcp, ethercat_mcp.cli, ethercat_mcp.esi_parser"
-# CI also starts `ethercat-mcp` over stdio and checks initialize, tools/list and ping.
+uv run --locked ethercat-mcp --help
+uv run --locked pytest
 
 cd ../ethercat-mock-slave
 uv sync --locked
-uv run --locked python -m compileall -q ethercat_mock_slave.py
+uv run --locked ruff check .
+uv run --locked ruff format --check .
 uv run --locked ethercat-mock-slave --help
-# CI also starts the mock in-process and round-trips scan/read_pdo/write_pdo.
+uv run --locked pytest
 ```
+
+The server's tests cover the configuration, the CoE value codec, the ESI
+parser, the PySOEM backend against a fake `pysoem` module
+(`tests/fake_pysoem.py`), the tools, stdout hygiene, and an end-to-end test
+that starts the mock and drives `ethercat-mcp` over stdio with the MCP client
+SDK. Nothing in either suite opens a network interface. If you change how the
+backend calls PySOEM, check the call against PySOEM's source and update the
+fake to match.
 
 If you change dependencies, run `uv lock` in that project and commit the
 updated `uv.lock`. CI installs with `--locked` and fails if the lockfile is
@@ -101,11 +112,11 @@ stale.
 
 Then drive the server the way a user would, through the
 [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) or a real
-client. From the repository root:
+client, against the mock. From the repository root, with the mock running:
 
 ```bash
 cd ethercat-python
-npx @modelcontextprotocol/inspector uv run ethercat-mcp
+npx @modelcontextprotocol/inspector -e ETHERCAT_BACKEND=mock uv run ethercat-mcp
 ```
 
 Call the tool you changed, and check the envelope, not just the value.
@@ -117,11 +128,15 @@ on hardware, say so in the pull request and describe the bench you used
 ## House rules for the code
 
 - MCP speaks over **stdio**, so `stdout` belongs to the protocol. All logging
-  goes to `stderr`. A stray `print()` corrupts the session.
+  goes to `stderr`. The CLI also moves file descriptor 1 to stderr before the
+  server starts, so a stray `print()` cannot corrupt the session, but do not
+  rely on that.
 - An error is a returned `{ success: false, error }`, not an exception that
   kills the server or surfaces as a bare tool error. The model needs to be
   told what went wrong.
-- Fail at startup, not at the first tool call, when configuration is unusable.
+- Read configuration in `EthercatConfig.from_env()`, never at import time, and
+  fail at startup, not at the first tool call, when it is unusable.
+- Give every tool a docstring: it is the description clients show.
 - Keep tool names and argument names aligned with the other IndustriConnect
   servers.
 
