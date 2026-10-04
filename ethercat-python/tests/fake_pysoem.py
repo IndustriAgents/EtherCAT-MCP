@@ -12,8 +12,11 @@ SOEM behaviour the backend depends on:
   cleared by SOEM: not by ``config_init``, not by ``config_map``. Devices in OP
   apply whatever the image holds; leaving OP drops their applied outputs to 0.
 * ``receive_processdata`` returns the working counter, or -1 (EC_NOFRAME)
-  without touching the inputs when the frame is lost. Inputs and outputs count
-  1 and 2 per device in SAFEOP/OP, like ``Master.expected_wkc``.
+  without touching the inputs when the frame is lost. Every device in SAFEOP/OP
+  adds 1 for inputs and 2 for outputs. ``Master.expected_wkc`` counts like SOEM,
+  per process-image byte range: bit-packed slaves sharing a byte count once.
+* A device's sync manager keeps the last outputs it received (also in SAFEOP);
+  on entering OP it applies them at once, before the next frame arrives.
 * ``state_check`` returns ``rval & 0x0f`` and stores the full AL status
   (including the error bit) in ``state``. On the Master (slave 0) it is a
   broadcast read: the states of all devices ORed together.
@@ -114,6 +117,9 @@ class SlaveSpec:
     fprd_fails: bool = False
     sdo_reply_lost: bool = False  # SDO downloads are applied, but the answer never arrives (WkcError)
     watchdog_fails: bool = False
+    sdo_write_error: Exception | None = None  # raised by sdo_write after applying (e.g. a stray ring error)
+    fault_in_op: int | None = None  # AL status code: the device reaches OP, then falls to SAFEOP+ERROR
+    ignore_requests: bool = False  # the device does not react to AL control writes (no answer in time)
 
 
 def default_bus() -> list[SlaveSpec]:
@@ -147,10 +153,14 @@ class FakeDevice:
         self.actual = state
         self.al_status = 0
         self.applied_outputs = bytes(spec.obytes)
+        self.sm_outputs = bytes(spec.obytes)  # last outputs the sync manager received
+        self.op_entries: list[bytes] = []  # outputs applied at each entry into OP
         self.objects = {k: list(v) for k, v in spec.objects.items()}
         self.watchdog: dict[str, float] = {}
 
     def request(self, requested: int) -> None:
+        if self.spec.ignore_requests:
+            return
         target = requested & 0x0F
         if self.actual & STATE_ERROR:
             if not requested & STATE_ACK:
@@ -168,6 +178,13 @@ class FakeDevice:
             self.applied_outputs = bytes(self.spec.obytes)  # outputs drop to their safe state
         self.actual = target
         self.al_status = 0
+        if target == OP_STATE:
+            self.applied_outputs = self.sm_outputs  # applied at once, before the next frame
+            self.op_entries.append(self.sm_outputs)
+            if self.spec.fault_in_op is not None:
+                self.actual = SAFEOP_STATE | STATE_ERROR
+                self.al_status = self.spec.fault_in_op
+                self.applied_outputs = bytes(self.spec.obytes)
 
     @property
     def exchanging(self) -> bool:
@@ -183,6 +200,7 @@ class FakeBus:
         self.mute: set[int] = set()  # devices that do not process the frame (no WKC, no data)
         self.fail_receive: Exception | None = None
         self.drop_after_write: int | None = None  # device that falls to SAFEOP+ERROR once its outputs change
+        self.lose_broadcasts = 0  # the next N broadcast AL-state reads are lost (read as 0)
         self.cycles = 0
 
 
@@ -264,6 +282,8 @@ class FakeSlave:
         entry[0] = data
         if self._dev.spec.sdo_reply_lost:
             raise WkcError(wkc=0)
+        if self._dev.spec.sdo_write_error is not None:
+            raise self._dev.spec.sdo_write_error
 
     def set_watchdog(self, wd_type, wd_time_ms):
         self._master._check()
@@ -368,15 +388,21 @@ class FakeMaster:
         self._check()
         self._bus.calls.append(("master.state_check", expected_state, timeout))
         rval = 0
-        for dev in self._bus.devices:
-            rval |= dev.actual
+        if self._bus.lose_broadcasts:
+            self._bus.lose_broadcasts -= 1  # BRD lost: SOEM keeps rval at 0
+        else:
+            for dev in self._bus.devices:
+                rval |= dev.actual
         self.state = rval
         return rval & 0x0F
 
     @property
     def expected_wkc(self):
+        """Like SOEM: per process-image byte range, so slaves sharing a byte count once."""
         slaves = self.slaves or []
-        return 2 * sum(1 for s in slaves if s._dev.spec.obytes) + sum(1 for s in slaves if s._dev.spec.ibytes)
+        outputs = {s.out_offset for s in slaves if s._dev.spec.obytes and s.out_offset is not None}
+        inputs = {s.in_offset for s in slaves if s._dev.spec.ibytes and s.in_offset is not None}
+        return 2 * len(outputs) + len(inputs)
 
     def send_processdata(self, *, release_gil=None):
         self._check()
@@ -384,6 +410,8 @@ class FakeMaster:
             dev = slave._dev
             if dev.index in self._bus.mute or self._bus.lose_frames:
                 continue
+            if slave.out_offset is not None and (dev.actual & 0x0F) in (SAFEOP_STATE, OP_STATE):
+                dev.sm_outputs = slave.output[: max(dev.spec.obytes, 1)]
             if dev.actual == OP_STATE and slave.out_offset is not None:
                 new = slave.output[: max(dev.spec.obytes, 1)]
                 if self._bus.drop_after_write == dev.index and new != dev.applied_outputs:

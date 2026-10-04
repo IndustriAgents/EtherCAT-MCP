@@ -274,3 +274,78 @@ async def test_load_esi_file_tool(server: EthercatMCPServer) -> None:
     assert device["object_dictionary"][0]["index"] == "0x1000"
     missing = await call(server, "load_esi_file", filepath="/nonexistent/esi.xml")
     assert missing["success"] is False and "not found" in missing["error"]
+
+
+@pytest.mark.anyio
+async def test_annotations_never_invite_retries_of_device_changes(server: EthercatMCPServer) -> None:
+    """Suite rule 13."""
+    changing = {"scan_network", "write_pdo", "write_sdo", "set_slave_state", "write_slave_by_alias"}
+    for tool in await server.mcp.list_tools():
+        hints = tool.annotations
+        if tool.name in changing:
+            assert hints.readOnlyHint is False, tool.name
+            assert hints.destructiveHint is True and hints.idempotentHint is False, tool.name
+        else:
+            assert hints.readOnlyHint is True, tool.name
+
+
+@pytest.mark.anyio
+async def test_invalid_arguments_to_a_write_tool_are_not_sent(server: EthercatMCPServer) -> None:
+    result = await call(server, "write_pdo", slave_position="2", offset=0, data=[1])
+    assert result["success"] is False and result["meta"]["outcome"] == "not_sent"
+    assert result["meta"]["request_sent"] is False
+    read = await call(server, "read_pdo", slave_position="2")
+    assert "outcome" not in read["meta"]
+
+
+@pytest.mark.anyio
+async def test_scan_reports_its_outcome_and_what_it_reset(tmp_path: Path) -> None:
+    srv, _ = build(tmp_path)
+    try:
+        result = await call(srv, "scan_network")
+        meta = result["meta"]
+        assert meta["outcome"] == "written" and meta["request_sent"] is True
+        assert meta["segment_state_before"] == "INIT" and meta["reset_live_segment"] is False
+    finally:
+        srv.master.backend.close()
+
+
+@pytest.mark.anyio
+async def test_every_device_call_has_an_overall_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Suite rule 12: a hung device call ends; a write is unknown, a read a clean error."""
+    import time as time_module
+
+    from ethercat_mcp.config import EthercatConfig
+
+    monkeypatch.setattr(EthercatConfig, "call_deadline_s", property(lambda self: 0.3))
+    srv, _ = build(tmp_path, ETHERCAT_WRITES_ENABLED="true")
+    backend = srv.master.backend
+    try:
+        await call(srv, "scan_network")
+        monkeypatch.setattr(backend, "write_sdo", lambda *args: time_module.sleep(3))
+        monkeypatch.setattr(backend, "read_sdo", lambda *args: time_module.sleep(3))
+        start = time_module.monotonic()
+        wrote = await call(srv, "write_sdo", slave_position=3, index="0x8000", subindex=6, value=1, data_type="UINT8")
+        assert wrote["success"] is False and wrote["meta"]["outcome"] == "unknown"
+        assert wrote["meta"]["request_sent"] is True and "did not finish within" in wrote["error"]
+        read = await call(srv, "read_sdo", slave_position=3, index="0x1000")
+        assert read["success"] is False and "did not finish within" in read["error"]
+        assert time_module.monotonic() - start < 2.5
+    finally:
+        backend.close()
+
+
+@pytest.mark.anyio
+async def test_esi_parsing_runs_off_the_event_loop_with_a_deadline(
+    server: EthercatMCPServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time as time_module
+
+    from ethercat_mcp import tools
+
+    monkeypatch.setattr(tools, "ESI_DEADLINE_S", 0.3)
+    monkeypatch.setattr(server.esi_parser, "select", lambda *args: time_module.sleep(3))
+    start = time_module.monotonic()
+    result = await call(server, "load_esi_file", filepath="slow.xml")
+    assert result["success"] is False and "did not finish within" in result["error"]
+    assert time_module.monotonic() - start < 2.0

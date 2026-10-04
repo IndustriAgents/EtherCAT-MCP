@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from typing import Any
 
 from .config import EthercatConfig
@@ -45,6 +46,7 @@ class MockBridgeBackend:
         self._slaves: list[dict[str, Any]] = []
         self._scanned = False
         self._requests = 0
+        self.last_scan: dict[str, Any] = {}
 
     @property
     def endpoint(self) -> str:
@@ -57,16 +59,27 @@ class MockBridgeBackend:
         went out is an "unknown" outcome and an error reply is "rejected".
         """
         timeout = self.config.timeout_us / 1_000_000
+        what = payload.get("op")
+        try:
+            request = json.dumps(payload).encode("utf-8") + b"\n"  # built before anything is sent
+        except (TypeError, ValueError) as exc:
+            raise EthercatMasterError(f"Could not encode the {what} request: {exc}") from exc
         try:
             sock = socket.create_connection((self.config.mock_host, self.config.mock_port), timeout=timeout)
         except OSError as exc:
             raise EthercatMasterError(f"Mock slave at {self.endpoint} is not reachable: {exc}") from exc
-        what = payload.get("op")
+        # One overall deadline for the whole exchange: a peer that trickles bytes, or answers
+        # garbage without a newline, cannot keep the call alive (suite rule 12).
+        deadline = time.monotonic() + timeout
         try:
             with sock:
-                sock.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+                sock.sendall(request)
                 buf = bytearray()
                 while not buf.endswith(b"\n"):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"no complete reply within {timeout:.3f} s")
+                    sock.settimeout(remaining)
                     chunk = sock.recv(65536)
                     if not chunk:
                         break
@@ -77,13 +90,18 @@ class MockBridgeBackend:
             reply = json.loads(buf)
             if not isinstance(reply, dict) or not isinstance(reply.get("success"), bool):
                 raise ValueError("unexpected reply")
-        except (OSError, ValueError) as exc:
-            message = f"Mock slave at {self.endpoint} gave no usable reply to {what}: {exc}"
+        except Exception as exc:  # anything after the request may have gone out
+            message = f"Mock slave at {self.endpoint} gave no usable reply to {what}: {type(exc).__name__}: {exc}"
             if write:
                 raise unknown_outcome(message) from exc
             raise EthercatMasterError(message) from exc
         if not reply["success"]:
             error = str(reply.get("error") or "Mock slave reported an error")
+            if write and error.startswith("Internal mock error"):
+                # The mock failed while handling the request: it may have been applied in part.
+                raise unknown_outcome(error)
+            # The mock checks every request before it applies anything, so its refusals are
+            # pre-execution: "rejected".
             raise EthercatMasterError(error, outcome=REJECTED if write else None)
         return reply.get("data")
 
@@ -166,14 +184,19 @@ class MockBridgeBackend:
             bits = 0
             for state in states:
                 bits |= state["state_code"]
-            refuse_live_segment(bits & 0x0F, self.config.state_changes_allowed)
-            data = self._request({"op": "scan"})
-            if not isinstance(data, list):
-                raise EthercatMasterError("Mock slave sent an unexpected scan reply")
+            bits &= 0x0F
+            refuse_live_segment(bits, self.config.state_changes_allowed)
+            self.last_scan = {
+                "segment_state_before": state_name(bits) if bits else "NONE (no answer)",
+                "reset_live_segment": bool(bits & 0x0C),
+            }
+            data = self._request({"op": "scan"}, write=True)
             try:
+                if not isinstance(data, list):
+                    raise TypeError("not a list")
                 self._slaves = [self._entry(item) for item in data]
             except (KeyError, TypeError, ValueError):
-                raise EthercatMasterError("Mock slave sent an unexpected scan reply") from None
+                raise unknown_outcome("Mock slave sent an unexpected scan reply") from None
             self._scanned = True
             # Like zeroing the image after config_map: start from zero, whatever an earlier run left.
             for position in range(len(self._slaves)):

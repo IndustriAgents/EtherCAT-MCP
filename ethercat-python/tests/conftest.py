@@ -52,9 +52,22 @@ def envelope_from(result: Any) -> dict[str, Any]:
 def running_mock(*args: str) -> Iterator[int]:
     """Start ethercat-mock-slave (stdlib only, so this venv's Python runs it) on a free loopback port."""
     assert MOCK_SCRIPT.is_file(), MOCK_SCRIPT
+    # Suite rule 11: the mock watches the stdin pipe and exits when it closes, so a killed
+    # pytest run does not leave it behind.
     proc = subprocess.Popen(
-        [sys.executable, str(MOCK_SCRIPT), "--host", "127.0.0.1", "--port", "0", "--update-interval", "0.2", *args],
-        stdin=subprocess.DEVNULL,
+        [
+            sys.executable,
+            str(MOCK_SCRIPT),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--update-interval",
+            "0.2",
+            "--exit-on-stdin-eof",
+            *args,
+        ],
+        stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -69,6 +82,7 @@ def running_mock(*args: str) -> Iterator[int]:
                 port = int(match.group(1))
         yield port
     finally:
+        proc.stdin.close()
         proc.terminate()
         try:
             proc.wait(timeout=10)

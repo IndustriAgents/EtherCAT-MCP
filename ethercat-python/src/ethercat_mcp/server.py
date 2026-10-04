@@ -62,8 +62,12 @@ class EnvelopeFastMCP(FastMCP):
             else:
                 logger.exception("Unexpected error in tool %s", name)
                 message = f"Unexpected error in {name}: {cause or exc}"
-            result = envelope(False, error=message, meta={**self._envelope_meta(), "tool": name})
-            return tool.fn_metadata.convert_result(result)
+            meta = {**self._envelope_meta(), "tool": name}
+            annotations = tool.annotations
+            if annotations is None or not annotations.readOnlyHint:
+                # A device-changing tool that failed here never sent anything.
+                meta.update({"outcome": "not_sent", "request_sent": False})
+            return tool.fn_metadata.convert_result(envelope(False, error=message, meta=meta))
 
 
 class EthercatMCPServer:
@@ -71,7 +75,7 @@ class EthercatMCPServer:
         self.config = config
         self.master = master or EthercatMaster(config)
         self.slave_map = SlaveMap(config.slave_map_path)
-        self.esi_parser = ESIParser(config.esi_base_path)
+        self.esi_parser = ESIParser(config.esi_base_path, max_bytes=config.esi_max_mb * 1024 * 1024)
         self._server = EnvelopeFastMCP(
             name="EtherCAT MCP Server",
             instructions=INSTRUCTIONS,

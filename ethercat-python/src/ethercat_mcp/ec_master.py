@@ -59,6 +59,22 @@ _STATE_ALIASES = {
     "OPERATIONAL": "OP",
 }
 
+# AL status codes with which a slave refuses a requested transition and stays where it was
+# (ETG.1000.6). Runtime faults such as 0x0018/0x0019 (no valid inputs/outputs), 0x001A
+# (synchronisation error) or 0x001B (sync-manager watchdog) can also appear after a slave
+# reached the requested state, so they are not treated as refusals.
+REFUSAL_AL_CODES = frozenset(
+    [*range(0x0011, 0x0018), *range(0x001C, 0x0020), *range(0x0020, 0x002A), 0x0030, 0x0031, 0x0035, 0x0036, 0x0037]
+)
+
+# Extra time on top of EthercatConfig.call_deadline_s: config_init reads every slave's EEPROM,
+# and the first SAFEOP/OP request maps the process image (CoE reads of the PDO assignment).
+SCAN_EXTRA_S = 50.0
+MAPPING_EXTRA_S = 30.0
+
+# Broadcast AL-state reads before a scan: a lost frame reads as 0, so OR several.
+_SEGMENT_STATE_READS = 3
+
 # CdefSlave.state_check holds the GIL while it polls, which stalls the process-data
 # thread. Poll in short slices and sleep (GIL released) in between.
 _STATE_POLL_US = 1000
@@ -126,6 +142,7 @@ class Backend(Protocol):
     """What :class:`EthercatMaster` needs from a backend. All calls are blocking."""
 
     name: str
+    last_scan: dict[str, Any]
 
     @property
     def scanned(self) -> bool: ...
@@ -239,6 +256,7 @@ class PysoemBackend:
         self._cycle_error: str | None = None
         self._layouts: dict[int, dict[str, Any] | None] = {}
         self._watchdog_errors: dict[int, str] = {}
+        self.last_scan: dict[str, Any] = {}
 
     # -- helpers -----------------------------------------------------------
 
@@ -392,6 +410,23 @@ class PysoemBackend:
                 return False
         return True
 
+    def _wkc_note(self) -> str | None:
+        """Say so when the working counter check is weaker because slaves share process-image bytes."""
+        for position, slave in enumerate(self._slaves):
+            for kind, view in (("input", slave.input), ("output", slave.output)):
+                if not len(view):
+                    continue
+                try:
+                    shared = self._alignment(position, slave, kind) is not None
+                except EthercatMasterError:
+                    shared = True  # layout unknown: assume the worst
+                if shared:
+                    return (
+                        "Bit-packed slaves share process-image bytes. SOEM's expected working counter counts such a "
+                        "byte once, so a slave that misses the frame can go unnoticed."
+                    )
+        return None
+
     def _clear_outputs(self, position: int, slave: Any) -> None:
         """Zero this slave's outputs in the process image (only its own bits if they are bit-packed)."""
         if not self._mapped or not len(slave.output):
@@ -472,9 +507,10 @@ class PysoemBackend:
             if not done or self._cycle_count < target:
                 raise EthercatMasterError("Timed out waiting for the process-data exchange")
 
-    def _ensure_mapped(self) -> None:
+    def _ensure_mapped(self) -> bool:
+        """Map the process image if needed. Returns True if it was mapped by this call."""
         if self._mapped:
-            return
+            return False
         master = self._master
         # Map only. Without this, SOEM would request SAFE-OP for every slave.
         master.manual_state_change = 1
@@ -494,6 +530,7 @@ class PysoemBackend:
                     slave.output = bytes(len(slave.output))
         self._set_watchdogs()
         self._start_cycle()
+        return True
 
     def _set_watchdogs(self) -> None:
         """Set the process-data watchdog of every slave with outputs (PySOEM's set_watchdog)."""
@@ -527,8 +564,16 @@ class PysoemBackend:
             if self._scanned:
                 master.read_state()
                 refuse_rescan([self._state_entry(i, slave) for i, slave in enumerate(self._slaves)])
-            # One broadcast read of the AL state: every slave's state ORed together.
-            refuse_live_segment(int(master.state_check(INIT_STATE, 2000)), self.config.state_changes_allowed)
+            # Broadcast reads of the AL state: every slave's state ORed together. A lost frame
+            # reads as 0, so several reads are ORed before deciding the segment is idle.
+            bits = 0
+            for _ in range(_SEGMENT_STATE_READS):
+                bits |= int(master.state_check(INIT_STATE, 2000))
+            refuse_live_segment(bits, self.config.state_changes_allowed)
+            self.last_scan = {
+                "segment_state_before": state_name(bits) if bits else "NONE (no answer)",
+                "reset_live_segment": bool(bits & (SAFEOP_STATE | OP_STATE)),
+            }
             self._stop_cycle()
             self._layouts = {}
             self._mapped = False
@@ -539,7 +584,8 @@ class PysoemBackend:
             try:
                 found = master.config_init(release_gil=True)
             except Exception as exc:
-                raise EthercatMasterError(f"Bus scan failed: {exc}") from exc
+                # config_init resets slaves as it goes: whatever happened may have taken effect.
+                raise unknown_outcome(f"Bus scan failed: {exc}") from exc
             self._slaves = list(master.slaves or []) if found > 0 else []
             self._scanned = True
             return [self._describe(i, slave) for i, slave in enumerate(self._slaves)]
@@ -581,6 +627,10 @@ class PysoemBackend:
                 "the frame, so the inputs may be stale"
             )
         meta = {"wkc": wkc, "expected_wkc": expected, "cycle": self._cycle_count}
+        with self._lock:
+            note = self._wkc_note()
+        if note:
+            meta["wkc_note"] = note
         if bits is not None and image:
             # Keep only this slave's bits of the shared byte, shifted down to bit 0.
             first, count = bits
@@ -609,20 +659,39 @@ class PysoemBackend:
                 image[offset : offset + len(data)] = data
                 slave.output = bytes(image)
         # From here on the outputs are in the image and go out with every frame: never resend,
-        # and report "unknown" rather than "failed" if they cannot be confirmed.
+        # and whatever goes wrong while confirming them is "unknown", never "not sent".
         try:
-            # Two exchanges: the first carries the new outputs, the second is fully after them.
-            self._wait_cycles(2)
-            with self._pd_lock:
-                wkc = self._last_wkc
-            with self._lock:
-                self._master.read_state()
-                target_ok = int(slave.state) == OP_STATE
-                all_op = self._pd_slaves_in((OP_STATE,))
+            return self._confirm_outputs(position, slave)
         except EthercatMasterError as exc:
+            if exc.outcome == UNKNOWN:
+                raise
             raise unknown_outcome(f"The outputs are in the process image, but {exc}") from exc
-        expected = self.config.expected_wkc or (self._master_expected_wkc() if all_op else None)
+        except Exception as exc:
+            raise unknown_outcome(
+                f"The outputs are in the process image, but confirming them failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    def _confirm_outputs(self, position: int, slave: Any) -> dict[str, Any]:
+        # Two exchanges: the first carries the new outputs, the second is fully after them.
+        self._wait_cycles(2)
+        with self._pd_lock:
+            wkc = self._last_wkc
+        with self._lock:
+            self._master.read_state()
+            target_ok = int(slave.state) == OP_STATE
+            all_op = self._pd_slaves_in((OP_STATE,))
+            note = self._wkc_note()
+        if self.config.expected_wkc:
+            expected, verified = self.config.expected_wkc, "configured_wkc"
+        elif all_op and self._master_expected_wkc():
+            expected, verified = self._master_expected_wkc(), "expected_wkc"
+        else:
+            # Not every process-data slave is in OP, so the group's count cannot be expected:
+            # only "some slave answered" and "the target is still in OP" can be checked.
+            expected, verified = None, "slave_state_only"
         meta: dict[str, Any] = {"wkc": wkc, "expected_wkc": expected, "cycle": self._cycle_count}
+        if note:
+            meta["wkc_note"] = note
         if wkc is None or wkc <= 0:
             raise unknown_outcome(
                 f"The outputs are in the process image, but no slave answered the frame (working counter {wkc})"
@@ -636,9 +705,7 @@ class PysoemBackend:
             raise unknown_outcome(
                 f"The outputs were sent, but slave {position} is now in {state_name(int(slave.state))}, not OP"
             )
-        # With every process-data slave in OP the full working counter confirms the frame;
-        # otherwise only the target's AL state (still OP, no error) does.
-        meta["verified"] = "expected_wkc" if expected else "slave_state"
+        meta["verified"] = verified
         meta["outcome"] = WRITTEN
         return meta
 
@@ -674,49 +741,90 @@ class PysoemBackend:
                 slave.sdo_write(index, subindex, bytes(data), release_gil=True)
             except Exception as exc:
                 message = self._sdo_error("write", position, index, subindex, exc)
-                if type(exc).__name__ in ("SdoError", "MailboxError"):
-                    # The slave answered with an abort or a mailbox error: it refused the download.
+                kind = type(exc).__name__
+                if kind == "NetworkInterfaceNotOpenError":
+                    raise EthercatMasterError(message) from exc  # raised before anything was sent
+                if kind == "SdoError" and self._abort_refused_whole_request(exc, position, index, subindex, data):
                     raise EthercatMasterError(message, outcome=REJECTED) from exc
-                if type(exc).__name__ == "NetworkInterfaceNotOpenError":
-                    raise EthercatMasterError(message) from exc
-                # No (or no usable) answer: the download may or may not have been applied. Never repeat it.
+                # A segmented download aborted part way, an error that SOEM's shared error ring
+                # holds for some other request, a mailbox or packet error, or no answer at all:
+                # the download may have been applied. Never repeat it.
                 raise unknown_outcome(message) from exc
+
+    @staticmethod
+    def _abort_refused_whole_request(exc: Exception, position: int, index: int, subindex: int, data: bytes) -> bool:
+        """True only if this abort is for this request and nothing of it can have been applied.
+
+        PySOEM raises the first error in SOEM's shared error ring, which may belong to an
+        earlier request, so slave (1-based in SOEM), index and subindex must match. Only an
+        expedited download (at most 4 bytes, one mailbox frame) is all-or-nothing; longer
+        downloads may be segmented and aborted after some segments were taken.
+        """
+        return (
+            len(data) <= 4
+            and getattr(exc, "slave_pos", None) == position + 1
+            and getattr(exc, "index", None) == index
+            and getattr(exc, "subindex", None) == subindex
+        )
 
     def set_state(self, position: int, state: int) -> dict[str, Any]:
         with self._lock:
             slave = self._require_slave(position)
+            mapped_now = False
             if state in (SAFEOP_STATE, OP_STATE):
-                self._ensure_mapped()
+                mapped_now = self._ensure_mapped()
                 self._require_cycling()
             self._master.read_state()
             current = int(slave.state)
+            al_before = int(slave.al_status)
             if state == OP_STATE and current != OP_STATE:
-                # Enter OP with zero outputs, never with bytes left in the image from before.
+                # Enter OP with zero outputs, never with bytes left in the image from before, and
+                # let two frames carry the zeros into the slave's sync manager before asking for OP.
                 self._clear_outputs(position, slave)
+                self._wait_cycles(2)
             # A slave with its error indicator set ignores requests until the error is acknowledged.
-            request = state | STATE_ACK if current & STATE_ERROR else state
-            slave.state = request
+            slave.state = state | STATE_ACK if current & STATE_ERROR else state
             try:
                 slave.write_state()
+            except Exception as exc:
+                if type(exc).__name__ == "NetworkInterfaceNotOpenError":
+                    raise EthercatMasterError(f"Requesting {STATE_NAMES[state]} failed: {exc}") from exc
+                raise unknown_outcome(f"Requesting {STATE_NAMES[state]} for slave {position} failed: {exc}") from exc
+            # The request may have reached the slave: from here on, failures are "unknown".
+            try:
                 deadline = time.monotonic() + self.config.timeout_us / 1_000_000
                 while slave.state_check(state, _STATE_POLL_US) != state and time.monotonic() < deadline:
                     time.sleep(_STATE_POLL_SLEEP_S)
                 self._master.read_state()
+                final = int(slave.state)
+                al_after = int(slave.al_status)
+                if final != OP_STATE:
+                    # Outside OP the slave does not apply outputs; clear its part of the image so
+                    # that entering OP later does not re-apply stale bytes.
+                    self._clear_outputs(position, slave)
+                entry = self._state_entry(position, slave)
             except Exception as exc:
-                raise unknown_outcome(f"Requesting {STATE_NAMES[state]} for slave {position} failed: {exc}") from exc
-            final = int(slave.state)
-            if final != OP_STATE:
-                # Outside OP the slave does not apply outputs; clear its part of the image so that
-                # entering OP later does not re-apply stale bytes.
-                self._clear_outputs(position, slave)
-            entry = self._state_entry(position, slave)
+                raise unknown_outcome(
+                    f"Requested {STATE_NAMES[state]} for slave {position}, but checking the result failed: {exc}"
+                ) from exc
+            result: dict[str, Any] = {"requested": STATE_NAMES[state], **entry}
+            if mapped_now:
+                result["process_image_mapped"] = True
+                result["pd_watchdog_errors"] = {str(k): v for k, v in self._watchdog_errors.items()}
             if final != state:
                 detail = f" (AL status {entry['al_status_code']}: {entry['al_status']})" if entry["al_status"] else ""
                 message = f"Slave {position} did not reach {STATE_NAMES[state]}; it is in {entry['state']}{detail}"
-                if final & STATE_ERROR or int(slave.al_status):
+                refused = (
+                    final & STATE_ERROR
+                    and (final & 0x0F) == (current & 0x0F)  # still where it started
+                    and al_after in REFUSAL_AL_CODES
+                    and (not current & STATE_ERROR or al_after != al_before)  # not a leftover code
+                )
+                if refused:
                     raise EthercatMasterError(message, outcome=REJECTED)
-                raise unknown_outcome(f"{message} after {self.config.timeout_us} us; it may still be changing")
-            return {"requested": STATE_NAMES[state], "outcome": WRITTEN, **entry}
+                raise unknown_outcome(f"{message} after {self.config.timeout_us} us")
+            result["outcome"] = WRITTEN
+            return result
 
     def status(self) -> dict[str, Any]:
         thread = self._cycle_thread
@@ -784,9 +892,26 @@ class EthercatMaster:
         self.config = config
         self.backend: Backend = backend or create_backend(config)
 
-    async def _run(self, func: Callable[..., T], *args: Any) -> tuple[T, float]:
+    async def _run(
+        self, func: Callable[..., T], *args: Any, write: bool = False, extra_s: float = 0.0
+    ) -> tuple[T, float]:
+        """Run a blocking backend call in a worker thread, bounded by an overall deadline.
+
+        Every SOEM and mock call has its own timeouts, but a call must never hang with
+        no outcome (suite rule 12). On expiry the worker thread is abandoned (threads
+        cannot be cancelled; the backend lock keeps later calls from overlapping it), a
+        read becomes a clean error and a write an "unknown" outcome.
+        """
+        deadline = self.config.call_deadline_s + extra_s
         start = time.perf_counter()
-        result = await anyio.to_thread.run_sync(partial(func, *args))
+        try:
+            with anyio.fail_after(deadline):
+                result = await anyio.to_thread.run_sync(partial(func, *args), abandon_on_cancel=True)
+        except TimeoutError:
+            what = getattr(func, "__name__", "request")
+            if write:
+                raise unknown_outcome(f"The {what} request did not finish within {deadline:.0f} s") from None
+            raise EthercatMasterError(f"The {what} request did not finish within {deadline:.0f} s") from None
         return result, round((time.perf_counter() - start) * 1000.0, 3)
 
     def describe(self) -> dict[str, Any]:
@@ -806,8 +931,8 @@ class EthercatMaster:
 
     async def scan_slaves(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         # Backends refuse a rescan while a slave is in SAFEOP/OP (checked under their own lock).
-        devices, ms = await self._run(self.backend.scan)
-        return devices, {"duration_ms": ms, "count": len(devices)}
+        devices, ms = await self._run(self.backend.scan, write=True, extra_s=SCAN_EXTRA_S)
+        return devices, {"duration_ms": ms, "count": len(devices), **self.backend.last_scan}
 
     def _slave_sync(self, position: int) -> dict[str, Any]:
         if not self.backend.scanned:
@@ -825,7 +950,7 @@ class EthercatMaster:
 
     async def write_pdo(self, position: int, offset: int, data: bytes) -> dict[str, Any]:
         self.require_writes()
-        meta, ms = await self._run(self.backend.write_pdo, position, offset, data)
+        meta, ms = await self._run(self.backend.write_pdo, position, offset, data, write=True)
         return {**meta, "duration_ms": ms}
 
     async def read_sdo(self, position: int, index: int, subindex: int) -> tuple[bytes, dict[str, Any]]:
@@ -834,12 +959,12 @@ class EthercatMaster:
 
     async def write_sdo(self, position: int, index: int, subindex: int, data: bytes) -> dict[str, Any]:
         self.require_writes()
-        _, ms = await self._run(self.backend.write_sdo, position, index, subindex, data)
+        _, ms = await self._run(self.backend.write_sdo, position, index, subindex, data, write=True)
         return {"duration_ms": ms, "outcome": WRITTEN}
 
     async def set_slave_state(self, position: int, state: int) -> tuple[dict[str, Any], dict[str, Any]]:
         self.require_state_changes()
-        result, ms = await self._run(self.backend.set_state, position, state)
+        result, ms = await self._run(self.backend.set_state, position, state, write=True, extra_s=MAPPING_EXTRA_S)
         return result, {"duration_ms": ms}
 
     def _test_sync(self, position: int) -> dict[str, Any]:
@@ -873,4 +998,10 @@ class EthercatMaster:
         return status
 
     async def close(self) -> None:
-        await anyio.to_thread.run_sync(self.backend.close)
+        """Close the backend, bounded: a device call stuck in a worker thread holds the backend
+        lock, and shutdown must not wait for it forever."""
+        try:
+            with anyio.fail_after(self.config.call_deadline_s):
+                await anyio.to_thread.run_sync(self.backend.close, abandon_on_cancel=True)
+        except TimeoutError:
+            logger.warning("Closing the EtherCAT master did not finish within %.0f s", self.config.call_deadline_s)

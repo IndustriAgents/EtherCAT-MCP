@@ -20,8 +20,12 @@ ESI files keep almost everything in child elements, not attributes::
       </Devices></Descriptions>
     </EtherCATInfo>
 
-Numbers use ``#x`` for hex. The parser does not resolve entities, load DTDs or
-touch the network.
+Numbers use ``#x`` for hex. ESI files have no use for a DTD, so a file that
+declares a DOCTYPE or an ENTITY is refused before parsing: libxml2 expands
+internal entities in attribute values even with entity resolution off, which
+allows a small file to cost seconds and hundreds of MB (an "entity bomb").
+Files larger than the configured cap are refused too. The parser never loads
+DTDs, resolves external entities or touches the network.
 """
 
 from __future__ import annotations
@@ -31,6 +35,9 @@ from pathlib import Path
 from typing import Any
 
 from lxml import etree
+
+DEFAULT_MAX_BYTES = 16 * 1024 * 1024
+_DECLARATIONS = (b"<!doctype", b"<!entity")
 
 
 class ESIParserError(RuntimeError):
@@ -85,8 +92,9 @@ def _access(el: Any) -> str | None:
 
 
 class ESIParser:
-    def __init__(self, base_path: Path | str | None = None) -> None:
+    def __init__(self, base_path: Path | str | None = None, max_bytes: int = DEFAULT_MAX_BYTES) -> None:
         self.base_path = Path(base_path).expanduser() if base_path else None
+        self.max_bytes = max_bytes
         self._cache: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
@@ -116,13 +124,46 @@ class ESIParser:
             self._cache[key] = (stamp, parsed)
         return parsed
 
+    @staticmethod
+    def _declares_dtd(data: bytes) -> bool:
+        """True if the document declares a DOCTYPE or ENTITY, in UTF-8/Latin-1 or UTF-16/32."""
+        texts = [data]
+        for bom, codec in (
+            (b"\xff\xfe\x00\x00", "utf-32-le"),
+            (b"\x00\x00\xfe\xff", "utf-32-be"),
+            (b"\xff\xfe", "utf-16-le"),
+            (b"\xfe\xff", "utf-16-be"),
+        ):
+            if data.startswith(bom):
+                texts.append(data.decode(codec, errors="replace").encode("utf-8"))
+                break
+        else:
+            if b"\x00" in data[:4]:  # UTF-16/32 without a byte-order mark
+                for codec in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+                    texts.append(data.decode(codec, errors="replace").encode("utf-8"))
+        return any(marker in text.lower() for text in texts for marker in _DECLARATIONS)
+
     def _parse(self, path: Path) -> dict[str, Any]:
+        try:
+            size = path.stat().st_size
+            if size > self.max_bytes:
+                raise ESIParserError(
+                    f"ESI file {path} is {size} bytes; the limit is {self.max_bytes} (ETHERCAT_ESI_MAX_MB)"
+                )
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ESIParserError(f"Cannot read ESI file {path}: {exc}") from exc
+        if self._declares_dtd(data):
+            raise ESIParserError(
+                f"Refusing {path}: it declares a DOCTYPE or ENTITY, which ESI files do not use and which "
+                "can make parsing explode"
+            )
         parser = etree.XMLParser(
             resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False, remove_comments=True
         )
         try:
-            root = etree.parse(str(path), parser).getroot()
-        except (etree.XMLSyntaxError, OSError) as exc:
+            root = etree.fromstring(data, parser, base_url=str(path))
+        except etree.XMLSyntaxError as exc:
             raise ESIParserError(f"Failed to parse ESI file {path}: {exc}") from exc
         if _local(root) != "EtherCATInfo":
             raise ESIParserError(f"{path} is not an ESI file (root element is <{_local(root)}>, not <EtherCATInfo>)")

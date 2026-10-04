@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import StrictInt
@@ -26,6 +28,7 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotent
 # A scan does not drive outputs, but SOEM resets every slave on the segment to INIT and then PRE-OP.
 SCAN = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
 MAX_PDO_BYTES = 4096  # SOEM's process image (EC_IOMAPSIZE) is 4096 bytes
+ESI_DEADLINE_S = 60.0
 WRITES = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
 
 
@@ -170,13 +173,14 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         true. A rescan is always refused while a slave this server brought up is in
         SAFEOP or OP.
         Returns position, name, vendor ID, product code, revision, AL state and the
-        process-data sizes (null on a real bus until the process image is mapped).
+        process-data sizes (null on a real bus until the process image is mapped);
+        meta.segment_state_before and meta.reset_live_segment say what the scan reset.
         """
         try:
             devices, meta = await master.scan_slaves()
         except Exception as exc:
-            return _err(str(exc))
-        return _ok(data={"slaves": devices}, meta=meta)
+            return _write_failed(exc, {})
+        return _ok(data={"slaves": devices}, meta=_written(meta))
 
     @server.tool(annotations=READ_ONLY)
     async def get_slave_info(slave_position: StrictInt) -> dict[str, Any]:
@@ -447,7 +451,13 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             revision: Revision to pick, e.g. "0x00120000".
         """
         try:
-            data = resources.esi_parser.select(filepath, device_type, revision)
+            # Parsing can take a while for a large file: keep it off the event loop, bounded.
+            with anyio.fail_after(ESI_DEADLINE_S):
+                data = await anyio.to_thread.run_sync(
+                    partial(resources.esi_parser.select, filepath, device_type, revision), abandon_on_cancel=True
+                )
+        except TimeoutError:
+            return _err(f"Parsing {filepath} did not finish within {ESI_DEADLINE_S:.0f} s", {"filepath": filepath})
         except Exception as exc:
             return _err(str(exc), {"filepath": filepath})
         return _ok(data=data)

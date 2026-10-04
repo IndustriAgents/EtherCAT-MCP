@@ -204,7 +204,7 @@ def test_write_pdo_checks_the_target_state_when_not_all_slaves_are_in_op(
     up(be, EL1008, SAFEOP_STATE)
     up(be, EL2008)  # EL1008 is in SAFEOP, EL3102 in PREOP: the group working counter cannot be expected
     meta = be.write_pdo(EL2008, 0, b"\x01")
-    assert meta["verified"] == "slave_state" and meta["outcome"] == "written"
+    assert meta["verified"] == "slave_state_only" and meta["outcome"] == "written"
     fake.bus.drop_after_write = EL2008  # the slave falls to SAFEOP+ERROR when the new outputs arrive
     with pytest.raises(EthercatMasterError, match="slave 2 is now in SAFEOP\\+ERROR, not OP") as info:
         be.write_pdo(EL2008, 0, b"\x03")
@@ -286,5 +286,194 @@ def test_watchdog_failure_is_reported_not_fatal() -> None:
         be.scan()
         be.set_state(EL2008, SAFEOP_STATE)
         assert "2" in be.status()["pd_watchdog_errors"]
+    finally:
+        be.close()
+
+
+# -- review round 2: outcome classification (suite rule 1a) ------------------------------
+
+
+def sdo_bus(error: Exception | None = None) -> FakePysoem:
+    fake = FakePysoem()
+    spec = fake.bus.devices[EL3102].spec
+    spec.objects[(0x8000, 0x11)] = [b"\x00" * 8, True]  # an 8-byte object: not expedited
+    spec.sdo_write_error = error
+    return fake
+
+
+def test_expedited_abort_for_this_request_is_rejected(bus: tuple[PysoemBackend, FakePysoem]) -> None:
+    be, _ = bus
+    be.scan()
+    with pytest.raises(EthercatMasterError, match="0x06010002") as info:
+        be.write_sdo(EL3102, 0x1000, 0, b"\x00\x00\x00\x00")
+    assert info.value.outcome == "rejected"
+
+
+def test_abort_of_a_longer_download_is_unknown() -> None:
+    """Downloads over 4 bytes may be segmented and aborted after some segments were taken."""
+    from fake_pysoem import SdoError
+
+    be, _ = make(sdo_bus(SdoError(EL3102 + 1, 0x8000, 0x11, 0x06070010, "length")))
+    try:
+        be.scan()
+        with pytest.raises(EthercatMasterError, match="may have been applied") as info:
+            be.write_sdo(EL3102, 0x8000, 0x11, b"\x01" * 8)
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "other_index",  # SOEM's shared error ring held an abort for another request
+        "other_slave",
+        "mailbox",
+        "packet",
+        "unexpected",
+    ],
+)
+def test_errors_that_may_not_belong_to_the_request_are_unknown(error: str) -> None:
+    from fake_pysoem import MailboxError, PacketError, SdoError
+
+    exc = {
+        "other_index": SdoError(EL3102 + 1, 0x2000, 0, 0x06020000, "no object"),
+        "other_slave": SdoError(EL1008 + 1, 0x8000, 6, 0x06020000, "no object"),
+        "mailbox": MailboxError(EL3102 + 1, 2, "mailbox error"),
+        "packet": PacketError(EL3102 + 1, 3),
+        "unexpected": RuntimeError("boom"),
+    }[error]
+    be, _ = make(sdo_bus(exc))
+    try:
+        be.scan()
+        with pytest.raises(EthercatMasterError) as info:
+            be.write_sdo(EL3102, 0x8000, 6, b"\x01")
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
+
+
+def test_a_failure_while_confirming_outputs_is_unknown(bus: tuple[PysoemBackend, FakePysoem]) -> None:
+    """The reviewer's case: the backend shuts down after the outputs went out."""
+    be, fake = bus
+    be.scan()
+    up(be, EL2008)
+    original = be._wait_cycles
+
+    def wait_then_close(count: int) -> None:
+        original(count)
+        be.close()  # e.g. SIGTERM lands now; self._master becomes None
+
+    be._wait_cycles = wait_then_close
+    with pytest.raises(EthercatMasterError, match="may have been applied") as info:
+        be.write_pdo(EL2008, 0, b"\xff")
+    assert info.value.outcome == "unknown" and info.value.request_sent
+
+
+def test_a_slave_that_reached_op_and_then_faulted_is_unknown_not_rejected() -> None:
+    fake = FakePysoem()
+    fake.bus.devices[EL2008].spec.fault_in_op = 0x001B  # sync-manager watchdog
+    be, _ = make(fake)
+    try:
+        be.scan()
+        be.set_state(EL2008, SAFEOP_STATE)
+        with pytest.raises(EthercatMasterError, match="SAFEOP\\+ERROR") as info:
+            be.set_state(EL2008, OP_STATE)
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
+
+
+def test_a_leftover_al_status_is_not_a_refusal() -> None:
+    fake = FakePysoem()
+    be, _ = make(fake)
+    try:
+        be.scan()
+        device = fake.device(EL1008)
+        device.al_status = 0x0011  # left over from something earlier; no error flag now
+        device.spec.ignore_requests = True  # and the slave does not answer this request in time
+        with pytest.raises(EthercatMasterError, match="did not reach SAFEOP") as info:
+            be.set_state(EL1008, SAFEOP_STATE)
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
+
+
+# -- review round 2: minors ---------------------------------------------------------
+
+
+def test_zeros_reach_the_slave_before_it_enters_op() -> None:
+    """Clearing the image is not enough: the slave applies its sync-manager buffer on entering OP."""
+    be, fake = make(ETHERCAT_CYCLE_TIME="20000")  # long cycles: no frame sneaks in by chance
+    try:
+        be.scan()
+        up(be, EL1008, SAFEOP_STATE)
+        up(be, EL2008)
+        be.write_pdo(EL2008, 0, b"\xff")
+        fake.device(EL2008).actual = SAFEOP_STATE | 0x10  # drops out by itself; frames keep sending 0xFF
+        be._wait_cycles(2)
+        assert fake.device(EL2008).sm_outputs == b"\xff"
+        be.set_state(EL2008, OP_STATE)
+        assert fake.device(EL2008).op_entries[-1] == b"\x00"
+    finally:
+        be.close()
+
+
+def test_first_scan_survives_a_lost_broadcast() -> None:
+    fake = FakePysoem(power_on_state=OP_STATE)
+    fake.bus.lose_broadcasts = 1  # the first AL-state broadcast reads as 0
+    be, _ = make(fake)
+    try:
+        with pytest.raises(EthercatMasterError, match="Refusing to scan"):
+            be.scan()
+    finally:
+        be.close()
+
+
+def test_scan_reports_what_it_reset() -> None:
+    be, _ = make(FakePysoem(power_on_state=OP_STATE), **GATES_ON)
+    try:
+        be.scan()
+        assert be.last_scan == {"segment_state_before": "OP", "reset_live_segment": True}
+    finally:
+        be.close()
+
+
+def shared_byte_bus() -> FakePysoem:
+    from fake_pysoem import SlaveSpec
+
+    return FakePysoem(
+        [
+            SlaveSpec("EK1100", 2, 0x044C2C52, 0x00110000),
+            SlaveSpec("EL2004", 2, 0x07D43052, 0, obytes=1, fmmus=[(2, 1, 0, 3)], out_offset=0),
+            SlaveSpec("EL2004", 2, 0x07D43052, 0, obytes=1, fmmus=[(2, 1, 4, 7)], out_offset=0),
+            SlaveSpec("EL1008", 2, 0x03F03052, 0, ibytes=1, fixed_input=b"\x01"),
+        ]
+    )
+
+
+def test_clearing_a_bit_packed_slave_keeps_its_neighbours_bits() -> None:
+    be, fake = make(shared_byte_bus())
+    try:
+        be.scan()
+        be.set_state(1, SAFEOP_STATE)
+        fake.masters[0].io_map[0] = 0xF0  # the neighbour (bits 4-7) has outputs set
+        be.set_state(1, OP_STATE)  # clears bits 0-3 only
+        assert fake.masters[0].io_map[0] == 0xF0
+    finally:
+        be.close()
+
+
+def test_shared_bytes_weaken_the_working_counter_check_and_say_so() -> None:
+    """SOEM counts a shared byte once: a slave that misses the frame can go unnoticed."""
+    be, fake = make(shared_byte_bus())
+    try:
+        be.scan()
+        for position in (1, 2, 3):
+            up(be, position, SAFEOP_STATE)
+        assert fake.masters[0].expected_wkc == 3  # one shared output byte (2) + one input (1)
+        fake.bus.mute.add(2)  # one of the two EL2004s misses the frame
+        data, meta = be.read_pdo(3, 0, 1)
+        assert meta["wkc"] == 3 and "can go unnoticed" in meta["wkc_note"]
     finally:
         be.close()

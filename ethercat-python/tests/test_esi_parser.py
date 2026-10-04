@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -81,7 +82,7 @@ def test_esi_path_lookup_and_errors(tmp_path: Path) -> None:
         parser.load(other)
 
 
-def test_external_entities_are_not_resolved(tmp_path: Path) -> None:
+def test_external_entities_are_refused(tmp_path: Path) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP-SECRET")
     evil = tmp_path / "evil.xml"
@@ -89,8 +90,60 @@ def test_external_entities_are_not_resolved(tmp_path: Path) -> None:
         f'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY s SYSTEM "file://{secret}">]>'
         "<EtherCATInfo><Vendor><Id>#x1</Id><Name>&s;</Name></Vendor></EtherCATInfo>"
     )
-    doc = ESIParser().load(evil)
-    assert "TOP-SECRET" not in str(doc)
+    with pytest.raises(ESIParserError, match="declares a DOCTYPE or ENTITY"):
+        ESIParser().load(evil)
+
+
+def write_attribute_bomb(path: Path) -> None:
+    """The reviewer's case: a 100 KB internal entity used 2000 times in an attribute value.
+
+    libxml2 expands entities in attribute values even with resolve_entities=False; at
+    the lxml 4.9.3 floor this took 6 s and 400 MB and parsed "successfully".
+    """
+    ent = "A" * 100_000
+    refs = "&a;" * 2000
+    path.write_text(
+        f'<?xml version="1.0"?>\n<!DOCTYPE EtherCATInfo [<!ENTITY a "{ent}">]>\n'
+        f"<EtherCATInfo><Vendor><Id>#x00000002</Id></Vendor><Descriptions><Devices><Device>"
+        f'<Type ProductCode="{refs}" RevisionNo="#x00120000">EL1008</Type></Device></Devices>'
+        f"</Descriptions></EtherCATInfo>\n"
+    )
+
+
+def test_attribute_entity_bomb_is_refused_before_parsing(tmp_path: Path) -> None:
+    bomb = tmp_path / "bomb.xml"
+    write_attribute_bomb(bomb)
+    start = time.perf_counter()
+    with pytest.raises(ESIParserError, match="declares a DOCTYPE or ENTITY"):
+        ESIParser().select(bomb)
+    assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize("codec", ["utf-16", "utf-16-le", "utf-32"])
+def test_declarations_are_found_in_other_encodings(tmp_path: Path, codec: str) -> None:
+    doc = tmp_path / "wide.xml"
+    text = '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><EtherCATInfo/>'
+    doc.write_bytes(text.encode(codec))
+    with pytest.raises(ESIParserError, match="declares a DOCTYPE or ENTITY"):
+        ESIParser().load(doc)
+
+
+def test_billion_laughs_in_text_is_refused(tmp_path: Path) -> None:
+    lol = ['<!ENTITY l0 "lol">'] + [f'<!ENTITY l{i} "{f"&l{i - 1};" * 10}">' for i in range(1, 10)]
+    doc = tmp_path / "laughs.xml"
+    doc.write_text(
+        f'<?xml version="1.0"?><!DOCTYPE x [{"".join(lol)}]><EtherCATInfo><Vendor>&l9;</Vendor></EtherCATInfo>'
+    )
+    with pytest.raises(ESIParserError, match="DOCTYPE or ENTITY"):
+        ESIParser().load(doc)
+
+
+def test_size_cap(tmp_path: Path) -> None:
+    big = tmp_path / "big.xml"
+    big.write_bytes(SAMPLE.read_bytes() + b" " * 2048)
+    with pytest.raises(ESIParserError, match="the limit is 1024"):
+        ESIParser(max_bytes=1024).load(big)
+    assert ESIParser().load(big)["devices"]
 
 
 def test_cache_follows_file_changes(tmp_path: Path) -> None:
