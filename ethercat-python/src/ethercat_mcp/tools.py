@@ -202,7 +202,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     @server.tool()
     async def load_esi_file(ctx: Context, filepath: str) -> Dict[str, Any]:  # noqa: ARG001
         try:
-            data = resources.esi_parser.load_cached(filepath)
+            data = resources.esi_parser.select(filepath)
         except Exception as exc:
             return _err(str(exc), {"filepath": filepath})
         return _ok(data=data)
