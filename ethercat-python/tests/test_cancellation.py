@@ -707,3 +707,82 @@ async def test_tool_calls_see_the_sdk_request_cancel_scope(monkeypatch: pytest.M
         await client.call_tool("scan_network", {})
     assert seen and isinstance(seen[0], anyio.CancelScope), seen
     assert ec_master.REQUEST_CANCEL_SCOPE.get() is None  # reset after the call
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("shielded", [False, True], ids=["cancel-delivered", "result-already-ready"])
+async def test_the_server_survives_a_same_step_cancel_through_the_sdk(
+    monkeypatch: pytest.MonkeyPatch, shielded: bool
+) -> None:
+    """RequestResponder.cancel() lands in the same step as the lock grant. The SDK has already
+    answered "Request cancelled"; the tool must not answer again (that trips the SDK's
+    "already responded" assertion), nothing may reach the slave, and the server keeps working.
+
+    "result-already-ready" shields the wait so the worker's result comes back although the
+    request was cancelled, as anyio does when the waiter completed in that same step.
+    """
+    from mcp.shared.exceptions import McpError
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from ethercat_mcp import ec_master
+    from ethercat_mcp.server import EnvelopeFastMCP, EthercatMCPServer
+
+    config = EthercatConfig.from_env({"ETHERCAT_INTERFACE": "fake0", "ETHERCAT_TIMEOUT": "100000", **GATES})
+    fake = FakePysoem()
+    backend = PysoemBackend(config, pysoem_module=fake)
+    server = EthercatMCPServer(config, master=EthercatMaster(config, backend=backend))
+    responders: dict[str, object] = {}
+    capture = EnvelopeFastMCP.request_cancel_scope
+
+    def capturing(self):
+        context = self._mcp_server.request_context
+        responders["current"] = context.session._in_flight.get(context.request_id)
+        return capture(self)
+
+    monkeypatch.setattr(EnvelopeFastMCP, "request_cancel_scope", capturing)
+    if shielded:
+        original_run = ec_master.EthercatMaster._run
+
+        async def shielded_run(self, func, *args, **kwargs):
+            with anyio.CancelScope(shield=True):
+                return await original_run(self, func, *args, **kwargs)
+
+        monkeypatch.setattr(ec_master.EthercatMaster, "_run", shielded_run)
+
+    class CancelOnGrant:
+        def __init__(self, inner):
+            self.inner = inner
+            self.armed = False
+
+        def acquire(self, *args, **kwargs):
+            got = self.inner.acquire(*args, **kwargs)
+            if got and self.armed:
+                self.armed = False
+                anyio.from_thread.run(responders["current"].cancel)  # the SDK's own cancel, same step
+            return got
+
+        def release(self):
+            self.inner.release()
+
+        def __enter__(self):
+            self.inner.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self.inner.release()
+
+    lock = CancelOnGrant(backend._lock)
+    backend._lock = lock
+    async with create_connected_server_and_client_session(server.mcp) as client:
+        await client.call_tool("scan_network", {})
+        for state in ("SAFEOP", "OP"):
+            await client.call_tool("set_slave_state", {"slave_position": 2, "state": state})
+        for _ in range(5):
+            lock.armed = True
+            with pytest.raises(McpError, match="Request cancelled"):
+                await client.call_tool("write_pdo", {"slave_position": 2, "offset": 0, "data": [0xA5]})
+            with anyio.fail_after(10):
+                ping = await client.call_tool("ping", {})
+            assert json.loads(ping.content[0].text)["success"] is True
+        assert backend._slaves[2].output == b"\x00"  # never staged
+        assert fake.device(2).applied_outputs == b"\x00"

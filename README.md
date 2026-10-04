@@ -335,7 +335,9 @@ strings such as `"0x10"`:
   behind another call; one that had is `unknown`. The send check also reads
   the MCP SDK's own cancellation flag for the request, which is set the moment
   the client cancels, so a call that is cancelled just as it gets the bus does
-  not slip through. A read ends with an error.
+  not slip through. Such a call is not answered a second time (the SDK has
+  already replied "Request cancelled"); the server logs on stderr whether
+  anything was sent. A read ends with an error.
   SOEM cannot interrupt `config_init` or `config_map`, so they only start with
   at least 10 s of the deadline left. An SDO transfer is budgeted for the
   worst case, because PySOEM does not report the slave's mailbox size: the

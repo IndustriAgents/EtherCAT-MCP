@@ -65,11 +65,26 @@ class EnvelopeFastMCP(FastMCP):
         return getattr(responder, "_cancel_scope", None)
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[Any] | dict[str, Any]:
-        scope_token = REQUEST_CANCEL_SCOPE.set(self.request_cancel_scope())
+        scope = self.request_cancel_scope()
+        scope_token = REQUEST_CANCEL_SCOPE.set(scope)
         try:
-            return await self._call_tool(name, arguments)
+            result = await self._call_tool(name, arguments)
         finally:
             REQUEST_CANCEL_SCOPE.reset(scope_token)
+        if scope is not None and scope.cancel_called:
+            # The client cancelled and the SDK has already answered "Request cancelled". A second
+            # reply would trip the SDK's "already responded" assertion and can take the server
+            # down, so log what happened and end as a real cancellation, which the SDK suppresses.
+            outcome = _outcome_of(result)
+            logger.warning(
+                "Tool %s was cancelled by the client: %s",
+                name,
+                "nothing was sent"
+                if outcome in (None, "not_sent")
+                else f"outcome {outcome} (it may have been applied; read back before retrying)",
+            )
+            await anyio.lowlevel.checkpoint_if_cancelled()
+        return result
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[Any] | dict[str, Any]:
         try:
@@ -94,6 +109,16 @@ class EnvelopeFastMCP(FastMCP):
                 # A device-changing tool that failed here never sent anything.
                 meta.update({"outcome": "not_sent", "request_sent": False})
             return tool.fn_metadata.convert_result(envelope(False, error=message, meta=meta))
+
+
+def _outcome_of(result: Any) -> str | None:
+    """meta.outcome of a converted tool result (content list, or (content, structured)), if any."""
+    structured = result[1] if isinstance(result, tuple) and len(result) == 2 else result
+    if isinstance(structured, dict):
+        meta = structured.get("meta") or structured.get("result", {}).get("meta")
+        if isinstance(meta, dict):
+            return meta.get("outcome")
+    return None
 
 
 class EthercatMCPServer:
