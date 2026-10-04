@@ -25,20 +25,36 @@ application on the office network.
   `ETHERCAT_BACKEND=pysoem`, the server talks to whatever is wired to
   `ETHERCAT_INTERFACE`: real hardware.
 - **Keep writes and state changes off unless you mean otherwise.** Write tools
-  are gated by `ETHERCAT_WRITES_ENABLED` and state changes by
-  `ETHERCAT_STATE_CHANGE_ENABLED`. Both default to `false`. With both off, the
+  are gated by `ETHERCAT_WRITES_ENABLED`; state changes need it and
+  `ETHERCAT_STATE_CHANGE_ENABLED`. Both default to `false`. With them off, the
   server never moves a slave above PRE-OP and never writes outputs or CoE
   objects. Turning on state changes lets the model put slaves into OP, where
   outputs are live; turning on writes lets it set those outputs and change CoE
-  parameters.
+  parameters. A write is sent once and never repeated; if its answer is lost,
+  the result says `meta.outcome: "unknown"`, and you should read back before
+  retrying.
+- **A `.env` file cannot turn the gates on.** The server reads a `.env` in its
+  working directory for connection settings, but ignores (with a warning)
+  `ETHERCAT_WRITES_ENABLED` and `ETHERCAT_STATE_CHANGE_ENABLED` there: when an
+  MCP client starts the server, that directory is the client's project. Set
+  the gates in the process environment or in a file you pass with
+  `--env-file`. See `ethercat-python/.env.example`.
 - **Know that sudo drops your environment.** A gate you exported in your shell
   does not reach a server started with sudo; only the variables on the sudo
   command line, an `--env-file`, or a `.env` in the working directory do.
   `ethercat-mcp --print-config` shows what the process really sees.
 - **A scan is not passive.** `scan_network` makes this server the bus master:
   SOEM resets every slave on the segment to INIT and then requests PRE-OP.
-  Never connect the server's interface to a segment that another master is
-  running, for example through a free port of a running line.
+  The server first reads the AL state of the whole segment and refuses if a
+  slave is in SAFEOP or OP, unless both gates are on, but a segment that another
+  master is still bringing up (slaves in INIT or PRE-OP) passes that check. Never connect the
+  server's interface to a segment that another master is running, for example
+  through a free port of a running line.
+- **Do not count on the watchdog alone.** On shutdown the server requests INIT.
+  If it is killed outright (SIGKILL), outputs stay as they were until the
+  process-data watchdog expires (`ETHERCAT_PD_WATCHDOG_MS`, set on every slave
+  with outputs; PySOEM marks this experimental), and only on slaves whose sync
+  manager enables that watchdog.
 - **Give it a dedicated interface.** `ETHERCAT_INTERFACE` should be a NIC
   wired only to the EtherCAT segment. The master sends broadcast frames on
   whatever interface it is given.

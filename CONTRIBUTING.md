@@ -43,17 +43,28 @@ A change that breaks one of these needs a reason in the pull request:
    `success: false` with the reason rather than raising. `meta.backend` names
    the backend that answered.
 2. **Read-only by default.** Tools that write PDOs or SDOs go through
-   `ETHERCAT_WRITES_ENABLED`, and slave state changes go through
+   `ETHERCAT_WRITES_ENABLED`; slave state changes need it and
    `ETHERCAT_STATE_CHANGE_ENABLED`. Both default to `false`. A new tool that
-   can change equipment must use the same gates.
+   can change equipment must use the same gates. The gates are only read from
+   the process environment or `--env-file`, never from an automatically found
+   `.env`.
 3. **Never report what did not happen.** A tool returns `success: true` only if
    the bus (or the mock) confirmed the operation as far as EtherCAT lets a
-   master tell (for process data, that is the frame's working counter), and
-   never returns made-up device data. If something is not implemented, say so
-   with `success: false`.
-4. **A mock for the protocol.** If you add a tool, make it work against
+   master tell (for process data, the frame's working counter and the slave's
+   AL state), and never returns made-up device data. If something is not
+   implemented, say so with `success: false`.
+4. **Never repeat a write.** A device-changing request goes out once. Only
+   (re)connecting may be retried. If the answer is lost, report
+   `meta.outcome: "unknown"` with `meta.request_sent: true` and tell the caller
+   to read back before retrying; other outcomes are `written`, `rejected` and
+   `not_sent`.
+5. **Strict arguments.** Positions, offsets, indexes and byte values are strict
+   integers (`pydantic.StrictInt`): a boolean is never a number.
+6. **A mock for the protocol.** If you add a tool, make it work against
    `ethercat-mock-slave` through the mock transport (`ETHERCAT_BACKEND=mock`)
-   and add it to the end-to-end test.
+   and add it to the end-to-end test and to the stdout test's tool list.
+7. **Safety tests must be able to fail.** When you add a protection, add a test
+   and check that it fails with the protection removed.
 
 ## Getting set up
 
@@ -90,6 +101,10 @@ uv run --locked ruff format --check .
 uv run --locked python -m compileall -q src
 uv run --locked ethercat-mcp --help
 uv run --locked pytest
+# CI also runs the suite with the lowest versions pyproject.toml allows:
+uv venv --python 3.11 /tmp/lowest && \
+  uv pip install --python /tmp/lowest/bin/python --resolution lowest-direct -e . "pytest>=8.2.0" && \
+  /tmp/lowest/bin/python -m pytest
 
 cd ../ethercat-mock-slave
 uv sync --locked
@@ -101,7 +116,10 @@ uv run --locked pytest
 
 The server's tests cover the configuration, the CoE value codec, the ESI
 parser, the PySOEM backend against a fake `pysoem` module
-(`tests/fake_pysoem.py`), the tools, stdout hygiene, and an end-to-end test
+(`tests/fake_pysoem.py`, which models SOEM's persistent process image, working
+counters and AL error handling), the safety regressions
+(`tests/test_safety_regressions.py`), the tools, the FastMCP internals the
+server relies on, stdout hygiene with every tool called, and an end-to-end test
 that starts the mock and drives `ethercat-mcp` over stdio with the MCP client
 SDK. Nothing in either suite opens a network interface. If you change how the
 backend calls PySOEM, check the call against PySOEM's source and update the
@@ -109,7 +127,8 @@ fake to match.
 
 If you change dependencies, run `uv lock` in that project and commit the
 updated `uv.lock`. CI installs with `--locked` and fails if the lockfile is
-stale.
+stale. Keep the floors in `pyproject.toml` honest: the lowest-direct job must
+pass. `mcp` stays below 2 because `server.py` uses FastMCP internals.
 
 Then drive the server the way a user would, through the
 [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) or a real
@@ -140,6 +159,8 @@ on hardware, say so in the pull request and describe the bench you used
 - Give every tool a docstring: it is the description clients show.
 - Keep tool names and argument names aligned with the other IndustriConnect
   servers.
+
+Questions go to [Discussions](https://github.com/IndustriAgents/EtherCAT-MCP/discussions).
 
 ## Pull requests
 

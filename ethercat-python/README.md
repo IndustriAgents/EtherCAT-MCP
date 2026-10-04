@@ -27,9 +27,9 @@ uv sync
 sudo ETHERCAT_INTERFACE=eth0 PYTHONDONTWRITEBYTECODE=1 .venv/bin/ethercat-mcp
 ```
 
-sudo resets the environment, so variables you exported and an MCP client's `env` block do not reach the root process. Put every setting on the sudo line as above, or use `--env-file PATH` (or a `.env` in the current directory). `--print-config` shows what the server sees, and the process then waits on stdin for an MCP client (for example `npx @modelcontextprotocol/inspector sudo ETHERCAT_INTERFACE=eth0 PYTHONDONTWRITEBYTECODE=1 .venv/bin/ethercat-mcp`). The server runs from `.venv` because `sudo uv run` usually stops with `sudo: uv: command not found`: sudo's `secure_path` (Ubuntu, Debian, Fedora, RHEL) leaves out `~/.local/bin`, where uv's installer and pipx put `uv`. `PYTHONDONTWRITEBYTECODE=1` keeps root from leaving root-owned `__pycache__` folders that would break your next `uv sync`. `eth0` is a Linux example; macOS names interfaces `en0`, `en1`, and so on. To let an MCP client start the server without sudo on Linux (`setcap` on the interpreter), see [Real bus](../README.md#real-bus) in the top-level README.
+sudo resets the environment, so variables you exported and an MCP client's `env` block do not reach the root process. Put every setting on the sudo line as above, or use `--env-file PATH`. A `.env` in the current directory is read too, but only for connection settings: it can never turn `ETHERCAT_WRITES_ENABLED` or `ETHERCAT_STATE_CHANGE_ENABLED` on. `--print-config` shows what the server sees, and the process then waits on stdin for an MCP client (for example `npx @modelcontextprotocol/inspector sudo ETHERCAT_INTERFACE=eth0 PYTHONDONTWRITEBYTECODE=1 .venv/bin/ethercat-mcp`). The server runs from `.venv` because `sudo uv run` usually stops with `sudo: uv: command not found`: sudo's `secure_path` (Ubuntu, Debian, Fedora, RHEL) leaves out `~/.local/bin`, where uv's installer and pipx put `uv`. `PYTHONDONTWRITEBYTECODE=1` keeps root from leaving root-owned `__pycache__` folders that would break your next `uv sync`. `eth0` is a Linux example; macOS names interfaces `en0`, `en1`, and so on. To let an MCP client start the server without sudo on Linux (`setcap` on the interpreter), see [Real bus](../README.md#real-bus) in the top-level README.
 
-[Configuration](../README.md#configuration) in the top-level README lists every setting. All of them are read at startup, after `.env` (from the current directory only) is loaded; variables already in the environment win.
+[Configuration](../README.md#configuration) in the top-level README lists every setting, and [`.env.example`](.env.example) shows them. All of them are read at startup, after `.env` (from the current directory only) is loaded; variables already in the environment win. Safety switches in an automatically found `.env` are ignored with a warning; set them in the environment or an `--env-file`.
 
 ## Layout
 
@@ -39,6 +39,7 @@ ethercat-python/
 ├── pyproject.toml
 ├── uv.lock
 ├── .python-version
+├── .env.example
 ├── src/ethercat_mcp
 │   ├── cli.py           # argparse, .env loading, startup
 │   ├── config.py        # EthercatConfig.from_env()
@@ -50,6 +51,7 @@ ethercat-python/
 │   └── esi_parser.py    # ETG.2000 ESI parser
 └── tests/
     ├── fake_pysoem.py   # stand-in for the PySOEM API used by the backend
+    ├── test_safety_regressions.py  # stale outputs, live-segment scan, working counters, no repeats
     ├── fixtures/        # hand-written, ESI-shaped sample (not a vendor file)
     └── test_*.py        # unit tests, stdio tests, end-to-end test against the mock
 ```
