@@ -451,7 +451,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             revision: Revision to pick, e.g. "0x00120000".
         """
         try:
-            # Parsing can take a while for a large file: keep it off the event loop, bounded.
+            # In a worker thread with a deadline, so a slow read does not block other calls. lxml holds
+            # the GIL while it parses, so this does not bound a slow parse; the size cap, the encoding
+            # allow-list and the DOCTYPE/ENTITY refusal do.
             with anyio.fail_after(ESI_DEADLINE_S):
                 data = await anyio.to_thread.run_sync(
                     partial(resources.esi_parser.select, filepath, device_type, revision), abandon_on_cancel=True

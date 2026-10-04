@@ -30,6 +30,7 @@ DTDs, resolves external entities or touches the network.
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,47 @@ from typing import Any
 from lxml import etree
 
 DEFAULT_MAX_BYTES = 16 * 1024 * 1024
-_DECLARATIONS = (b"<!doctype", b"<!entity")
+_DECLARATIONS = ("<!doctype", "<!entity")
+
+# Encodings an ESI file may use. Anything else (UTF-7, EBCDIC, ...) is refused before parsing:
+# libxml2 would decode it, but the DOCTYPE/ENTITY screen could not see through it.
+_ALLOWED_ENCODINGS = {
+    "utf-8": "utf-8",
+    "utf8": "utf-8",
+    "utf-16": "utf-16",
+    "utf16": "utf-16",
+    "utf-16le": "utf-16-le",
+    "utf-16be": "utf-16-be",
+    "utf-32": "utf-32",
+    "utf32": "utf-32",
+    "utf-32le": "utf-32-le",
+    "utf-32be": "utf-32-be",
+    "iso-8859-1": "latin-1",
+    "iso8859-1": "latin-1",
+    "iso_8859-1": "latin-1",
+    "latin-1": "latin-1",
+    "latin1": "latin-1",
+    "l1": "latin-1",
+    "us-ascii": "ascii",
+    "ascii": "ascii",
+}
+_BOMS = (
+    (b"\xef\xbb\xbf", "utf-8"),
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+)
+# How "<?" looks at the start of a file without a byte-order mark (XML 1.0, appendix F).
+_UNMARKED = (
+    (b"\x00\x00\x00<", "utf-32-be"),
+    (b"<\x00\x00\x00", "utf-32-le"),
+    (b"\x00<\x00?", "utf-16-be"),
+    (b"<\x00?\x00", "utf-16-le"),
+)
+_ENCODING_ATTR = re.compile(r"""\bencoding\s*=\s*["']([^"']*)["']""")
+# libxml2 recognises EBCDIC documents by these first bytes ("<?xm" in code page 037/500).
+_EBCDIC_SIGNATURE = b"\x4c\x6f\xa7\x94"
 
 
 class ESIParserError(RuntimeError):
@@ -125,23 +166,63 @@ class ESIParser:
         return parsed
 
     @staticmethod
-    def _declares_dtd(data: bytes) -> bool:
-        """True if the document declares a DOCTYPE or ENTITY, in UTF-8/Latin-1 or UTF-16/32."""
-        texts = [data]
-        for bom, codec in (
-            (b"\xff\xfe\x00\x00", "utf-32-le"),
-            (b"\x00\x00\xfe\xff", "utf-32-be"),
-            (b"\xff\xfe", "utf-16-le"),
-            (b"\xfe\xff", "utf-16-be"),
-        ):
-            if data.startswith(bom):
-                texts.append(data.decode(codec, errors="replace").encode("utf-8"))
-                break
+    def _decode(data: bytes, path: Path) -> str:
+        """Decide the encoding once, in Python, and return the document as text.
+
+        The encoding comes from the byte-order mark or the first bytes (XML 1.0,
+        appendix F), then from the whole XML declaration (up to the first ``?>``,
+        however long it is). Only UTF-8, UTF-16, UTF-32, ISO-8859-1 and US-ASCII are
+        accepted; EBCDIC, UTF-7 and everything else are refused. The returned text has
+        no BOM and no XML declaration, so libxml2 parses exactly this text and cannot
+        pick a different encoding on its own.
+        """
+        if data.startswith(_EBCDIC_SIGNATURE):
+            raise ESIParserError(f"Refusing {path}: it is EBCDIC-encoded; ESI files must use UTF-8 or ISO-8859-1")
+        bom = next(((marker, codec) for marker, codec in _BOMS if data.startswith(marker)), None)
+        family = bom[1] if bom else next((codec for start, codec in _UNMARKED if data.startswith(start)), None)
+        body = data[len(bom[0]) :] if bom else data
+        wide = family is not None and family.startswith(("utf-16", "utf-32"))
+        if wide:
+            try:
+                text = body.decode(family)
+            except UnicodeDecodeError as exc:
+                raise ESIParserError(f"Refusing {path}: it is not valid {family}: {exc}") from None
+            declaration_text = text
         else:
-            if b"\x00" in data[:4]:  # UTF-16/32 without a byte-order mark
-                for codec in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
-                    texts.append(data.decode(codec, errors="replace").encode("utf-8"))
-        return any(marker in text.lower() for text in texts for marker in _DECLARATIONS)
+            # ASCII-compatible: read the declaration as Latin-1 (every byte maps), then decode
+            # the document once with the encoding it declares.
+            declaration_text = body.decode("latin-1")
+        declared = None
+        if declaration_text.startswith("<?xml"):
+            end = declaration_text.find("?>")
+            if end < 0:
+                raise ESIParserError(f"Refusing {path}: its XML declaration is not terminated")
+            match = _ENCODING_ATTR.search(declaration_text[: end + 2])
+            declared = match.group(1).strip().lower() if match else None
+            rest_start = end + 2
+        elif declaration_text.lstrip().startswith("<"):
+            rest_start = 0
+        else:
+            raise ESIParserError(f"Refusing {path}: it does not start like an XML document in a supported encoding")
+        if declared is not None:
+            codec = _ALLOWED_ENCODINGS.get(declared)
+            if codec is None:
+                raise ESIParserError(
+                    f"Refusing {path}: it declares encoding {match.group(1)!r}; ESI files must use UTF-8, UTF-16, "
+                    "UTF-32, ISO-8859-1 or US-ASCII"
+                )
+            if wide != codec.startswith(("utf-16", "utf-32")):
+                raise ESIParserError(
+                    f"Refusing {path}: its declared encoding {match.group(1)!r} does not match its bytes"
+                )
+        else:
+            codec = family or "utf-8"
+        if wide:
+            return text[rest_start:]
+        try:
+            return body.decode(codec)[rest_start:] if rest_start else body.decode(codec)
+        except UnicodeDecodeError as exc:
+            raise ESIParserError(f"Refusing {path}: it is not valid {codec}: {exc}") from None
 
     def _parse(self, path: Path) -> dict[str, Any]:
         try:
@@ -153,7 +234,8 @@ class ESIParser:
             data = path.read_bytes()
         except OSError as exc:
             raise ESIParserError(f"Cannot read ESI file {path}: {exc}") from exc
-        if self._declares_dtd(data):
+        text = self._decode(data, path)
+        if any(marker in text.lower() for marker in _DECLARATIONS):
             raise ESIParserError(
                 f"Refusing {path}: it declares a DOCTYPE or ENTITY, which ESI files do not use and which "
                 "can make parsing explode"
@@ -162,8 +244,9 @@ class ESIParser:
             resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False, remove_comments=True
         )
         try:
-            root = etree.fromstring(data, parser, base_url=str(path))
-        except etree.XMLSyntaxError as exc:
+            # Parse the text decoded above (no declaration left), never the raw bytes.
+            root = etree.fromstring(text, parser, base_url=str(path))
+        except (etree.XMLSyntaxError, ValueError) as exc:
             raise ESIParserError(f"Failed to parse ESI file {path}: {exc}") from exc
         if _local(root) != "EtherCATInfo":
             raise ESIParserError(f"{path} is not an ESI file (root element is <{_local(root)}>, not <EtherCATInfo>)")

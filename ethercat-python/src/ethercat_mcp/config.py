@@ -119,7 +119,7 @@ class EthercatConfig:
             esi_base_path=_path(env, "ETHERCAT_ESI_PATH"),
             mock_host=mock_host,
             mock_port=_int(env, "ETHERCAT_MOCK_PORT", 6700, minimum=1, maximum=65535),
-            esi_max_mb=_int(env, "ETHERCAT_ESI_MAX_MB", 16, minimum=1, maximum=512),
+            esi_max_mb=_int(env, "ETHERCAT_ESI_MAX_MB", 16, minimum=1, maximum=16),
         )
 
     @property
