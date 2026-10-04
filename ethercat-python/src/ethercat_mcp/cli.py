@@ -113,10 +113,14 @@ def main(argv: list[str] | None = None) -> None:
         "enabled" if config.state_change_enabled else "disabled",
         env_file or "none",
     )
+    server = EthercatMCPServer(config)
     try:
-        EthercatMCPServer(config).run(protocol_out)
+        server.run(protocol_out)
     except KeyboardInterrupt:
         pass
+    finally:
+        # Normally done by the lifespan already; close() is idempotent.
+        server.master.backend.close()
 
 
 if __name__ == "__main__":

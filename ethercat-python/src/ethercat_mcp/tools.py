@@ -199,7 +199,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """Read input process data (TxPDO) bytes of one slave from the cyclic process image.
 
         Inputs only exist once the process image is mapped and are only valid while the
-        slave is in SAFEOP or OP (use set_slave_state first). Errors otherwise.
+        slave is in SAFEOP or OP (use set_slave_state first). Errors otherwise. For a
+        slave with fewer than 8 input bits, only its own bits are returned, shifted to
+        bit 0 (meta.bit_packed).
 
         Args:
             slave_position: 0-based position on the bus.
@@ -225,7 +227,10 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         Needs ETHERCAT_WRITES_ENABLED=true (off by default). The slave must be in OP,
         because outputs are not applied in any other state. success means the bytes
-        went out in the cyclic frame and the frame was answered.
+        went out in the cyclic frame and the frame came back with a working counter
+        above 0 (or at least ETHERCAT_EXPECTED_WKC); that counter covers the whole
+        frame, not just this slave. Refused for slaves whose outputs are bit-packed
+        into a byte shared with other slaves.
 
         Args:
             slave_position: 0-based position on the bus.
@@ -321,7 +326,8 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         Needs ETHERCAT_STATE_CHANGE_ENABLED=true (off by default). On a real bus, the
         first request for SAFEOP or OP maps the process image and starts the cyclic
-        process-data exchange. Follow the EtherCAT state machine: INIT -> PREOP -> SAFEOP -> OP.
+        process-data exchange. A pending AL error on the slave is acknowledged.
+        Follow the EtherCAT state machine: INIT -> PREOP -> SAFEOP -> OP.
         success means the slave reports the requested state.
 
         Args:

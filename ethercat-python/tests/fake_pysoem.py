@@ -12,6 +12,7 @@ changes (and ``manual_state_change``), the process image and working counters.
 
 from __future__ import annotations
 
+import struct
 import threading
 from dataclasses import dataclass, field
 
@@ -88,6 +89,10 @@ class SlaveSpec:
     obytes: int = 0
     mailbox: bool = False
     objects: dict = field(default_factory=dict)  # (index, subindex) -> [bytes, writable]
+    # FMMUs SOEM would program: (type 1=inputs/2=outputs, length, start bit, end bit). None: byte-aligned.
+    fmmus: list | None = None
+    fixed_input: bytes | None = None  # input image the fake bus delivers (None: simulated values)
+    fprd_fails: bool = False
 
 
 def default_bus() -> list[SlaveSpec]:
@@ -143,11 +148,18 @@ class FakeSlave:
         assert isinstance(value, bytes)
         self._outputs[: len(value)] = value
 
-    def _request(self, target: int) -> None:
+    def _request(self, requested: int) -> None:
+        target = requested & 0x0F
+        if self.actual & STATE_ERROR:
+            if not requested & STATE_ACK:
+                return  # an ESC with its error indicator set waits for an acknowledge
+            self.actual &= 0x0F
+            self.al_status = 0
         if target == self.actual:
             self.al_status = 0
             return
         if (self.actual, target) not in VALID or (target in (SAFEOP_STATE, OP_STATE) and not self._bus.mapped):
+            self.actual |= STATE_ERROR
             self.al_status = 0x0011
             return
         if self.actual == OP_STATE:
@@ -155,12 +167,28 @@ class FakeSlave:
         self.actual = target
         self.al_status = 0
 
+    def _fprd(self, address: int, size: int, timeout_us: int = 2000) -> bytes:
+        """FMMU registers as SOEM's config_map would have programmed them."""
+        if self._spec.fprd_fails:
+            raise WkcError()
+        regs = bytearray(size)
+        if address == 0x0600 and self._bus.mapped:
+            fmmus = self._spec.fmmus
+            if fmmus is None:
+                fmmus = [(2, self._spec.obytes, 0, 7)] if self._spec.obytes else []
+                fmmus += [(1, self._spec.ibytes, 0, 7)] if self._spec.ibytes else []
+            for n, (ftype, length, start, end) in enumerate(fmmus):
+                if 16 * (n + 1) <= size:
+                    struct.pack_into("<IHBBHBBB", regs, 16 * n, 0, length, start, end, 0x1000, 0, ftype, 1)
+        return bytes(regs)
+
     def write_state(self) -> int:
         self._bus.calls.append(("slave.write_state", self._pos, self.state))
         self._request(self.state)
         return 1
 
     def state_check(self, expected_state: int, timeout: int = 2000) -> int:
+        self._bus.calls.append(("slave.state_check", self._pos, expected_state, timeout))
         self.state = self.actual
         return self.actual
 
@@ -218,7 +246,7 @@ class FakeMaster:
 
     def config_init(self, usetable=False, *, release_gil=None):
         self._check()
-        self._bus.calls.append(("config_init", self.manual_state_change))
+        self._bus.calls.append(("config_init", self.manual_state_change, release_gil))
         self._bus.mapped = False
         self.slaves = [FakeSlave(self._bus, i, spec) for i, spec in enumerate(self._bus.specs)]
         for slave in self.slaves:
@@ -277,7 +305,9 @@ class FakeMaster:
                 if slave.actual not in (SAFEOP_STATE, OP_STATE):
                     continue
                 if slave._spec.ibytes:
-                    if slave.name == "EL1008" and loop_out is not None:
+                    if slave._spec.fixed_input is not None:
+                        slave._inputs[:] = slave._spec.fixed_input
+                    elif slave.name == "EL1008" and loop_out is not None:
                         slave._inputs[:] = loop_out.applied_outputs
                     elif slave.name == "EL3102":
                         slave._inputs[:] = (self._bus.cycles & 0xFFFFFFFF).to_bytes(4, "little")

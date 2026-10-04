@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from fake_pysoem import FakePysoem
+from fake_pysoem import FakePysoem, SlaveSpec
 
 from ethercat_mcp.config import EthercatConfig
 from ethercat_mcp.ec_master import (
@@ -133,10 +133,75 @@ def test_write_pdo_checks_expected_wkc() -> None:
         be.close()
 
 
-def test_invalid_state_change_is_an_error(backend: PysoemBackend) -> None:
+def test_invalid_state_change_is_an_error_and_the_error_is_acknowledged(backend: PysoemBackend) -> None:
     backend.scan()
-    with pytest.raises(EthercatMasterError, match=r"did not reach OP; it is in PREOP \(AL status 0x0011"):
+    with pytest.raises(EthercatMasterError, match=r"did not reach OP; it is in PREOP\+ERROR \(AL status 0x0011"):
         backend.set_state(1, OP_STATE)
+    # The slave now ignores requests until its error is acknowledged; set_state sends the ACK bit.
+    assert backend.set_state(1, SAFEOP_STATE)["state"] == "SAFEOP"
+    fake = backend._pysoem
+    assert ("slave.write_state", 1, SAFEOP_STATE | 0x10) in fake.bus.calls
+
+
+def test_state_polling_does_not_hold_the_gil_for_long(backend: PysoemBackend) -> None:
+    backend.scan()
+    backend.set_state(3, SAFEOP_STATE)
+    checks = [call for call in backend._pysoem.bus.calls if call[0] == "slave.state_check"]
+    assert checks and all(call[3] <= 1000 for call in checks)
+    assert ("config_init", 0, True) in backend._pysoem.bus.calls  # release_gil during the scan
+
+
+def test_rescan_is_refused_by_the_backend_while_process_data_runs(backend: PysoemBackend) -> None:
+    backend.scan()
+    backend.set_state(3, SAFEOP_STATE)
+    with pytest.raises(EthercatMasterError, match=r"Refusing to rescan: slave\(s\) 3 \(SAFEOP\)"):
+        backend.scan()
+    backend.set_state(3, PREOP_STATE)
+    assert len(backend.scan()) == 4
+
+
+def bit_bus(fprd_fails: bool = False) -> FakePysoem:
+    return FakePysoem(
+        [
+            SlaveSpec("EK1100", 2, 0x044C2C52, 0x00110000),
+            # Two 4-bit terminals sharing one process-image byte each way, as SOEM packs them.
+            SlaveSpec(
+                "EL1004", 2, 0x03EC3052, 0, ibytes=1, fmmus=[(1, 1, 4, 7)], fixed_input=b"\xa5", fprd_fails=fprd_fails
+            ),
+            SlaveSpec("EL2004", 2, 0x07D43052, 0, obytes=1, fmmus=[(2, 1, 0, 3)], fprd_fails=fprd_fails),
+            SlaveSpec("EL1008", 2, 0x03F03052, 0, ibytes=1, fixed_input=b"\x3c"),
+        ]
+    )
+
+
+def test_bit_packed_inputs_are_masked_and_outputs_refused() -> None:
+    be, _ = make(bit_bus())
+    try:
+        be.scan()
+        for position in (1, 2, 3):
+            be.set_state(position, SAFEOP_STATE)
+        data, meta = be.read_pdo(1, 0, None)
+        assert data == b"\x0a"  # bits 4-7 of 0xA5, shifted down; the low nibble belongs to a neighbour
+        assert meta["bit_packed"] == {"first_bit": 4, "bit_count": 4}
+        assert be.read_pdo(3, 0, 1)[0] == b"\x3c"  # byte-aligned slaves are untouched
+        be.set_state(2, OP_STATE)
+        with pytest.raises(EthercatMasterError, match="bits 0-3 of a process-image byte shared with other slaves"):
+            be.write_pdo(2, 0, b"\x01")
+    finally:
+        be.close()
+
+
+def test_unknown_alignment_is_refused() -> None:
+    be, _ = make(bit_bus(fprd_fails=True))
+    try:
+        be.scan()
+        be.set_state(1, SAFEOP_STATE)
+        with pytest.raises(
+            EthercatMasterError, match="Cannot tell whether slave 1's input process data is byte-aligned"
+        ):
+            be.read_pdo(1, 0, 1)
+    finally:
+        be.close()
 
 
 def test_sdo_read_write_and_errors(backend: PysoemBackend) -> None:
@@ -171,7 +236,7 @@ def test_close_requests_init_and_stops_the_exchange() -> None:
     thread = be._cycle_thread
     be.close()
     assert thread is not None and not thread.is_alive()
-    assert ("master.write_state", 0x01) in fake.bus.calls
+    assert ("master.write_state", 0x11) in fake.bus.calls  # INIT with error acknowledge
     assert fake.bus.calls[-1] == ("close",)
     assert be.status()["interface_open"] is False
 

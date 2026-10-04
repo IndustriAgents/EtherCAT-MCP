@@ -16,7 +16,7 @@ import threading
 from typing import Any
 
 from .config import EthercatConfig
-from .ec_master import EthercatMasterError, check_slice, state_name
+from .ec_master import EthercatMasterError, check_slice, refuse_rescan, state_name
 
 _MAX_REPLY = 1 << 20
 
@@ -117,6 +117,8 @@ class MockBridgeBackend:
 
     def scan(self) -> list[dict[str, Any]]:
         with self._lock:
+            if self._scanned:
+                refuse_rescan(self._read_states())
             data = self._request({"op": "scan"})
             if not isinstance(data, list):
                 raise EthercatMasterError("Mock slave sent an unexpected scan reply")
@@ -135,19 +137,22 @@ class MockBridgeBackend:
             self._require_position(position)
             return dict(self._slaves[position])
 
+    def _read_states(self) -> list[dict[str, Any]]:
+        data = self._request({"op": "read_state"})
+        try:
+            states = [self._state(item) for item in data]
+        except (KeyError, TypeError, ValueError):
+            raise EthercatMasterError(f"Mock slave at {self.endpoint} sent an unexpected state reply") from None
+        for state in states:
+            pos = state["position"]
+            if 0 <= pos < len(self._slaves):
+                self._slaves[pos].update(state)
+        return states
+
     def read_states(self) -> list[dict[str, Any]]:
         with self._lock:
             self._require_scanned()
-            data = self._request({"op": "read_state"})
-            try:
-                states = [self._state(item) for item in data]
-            except (KeyError, TypeError, ValueError):
-                raise EthercatMasterError(f"Mock slave at {self.endpoint} sent an unexpected state reply") from None
-            for state in states:
-                pos = state["position"]
-                if 0 <= pos < len(self._slaves):
-                    self._slaves[pos].update(state)
-            return states
+            return self._read_states()
 
     def read_pdo(self, position: int, offset: int, length: int | None) -> tuple[bytes, dict[str, Any]]:
         with self._lock:

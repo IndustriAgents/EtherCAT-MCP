@@ -13,6 +13,7 @@ write_state/state_check`` and the ``input``/``output`` process-image views).
 from __future__ import annotations
 
 import logging
+import struct
 import threading
 import time
 from collections.abc import Callable
@@ -34,7 +35,8 @@ PREOP_STATE = 0x02
 BOOT_STATE = 0x03
 SAFEOP_STATE = 0x04
 OP_STATE = 0x08
-STATE_ERROR = 0x10
+STATE_ERROR = 0x10  # error indicator in AL status
+STATE_ACK = 0x10  # error acknowledge in AL control
 
 STATE_NAMES = {
     NONE_STATE: "NONE",
@@ -57,8 +59,16 @@ _STATE_ALIASES = {
     "OPERATIONAL": "OP",
 }
 
-# Polling slice for state checks, in microseconds (as in PySOEM's examples).
-_STATE_POLL_US = 50_000
+# CdefSlave.state_check holds the GIL while it polls, which stalls the process-data
+# thread. Poll in short slices and sleep (GIL released) in between.
+_STATE_POLL_US = 1000
+_STATE_POLL_SLEEP_S = 0.01
+
+# ESC FMMU registers (ETG.1000.4): 16 bytes each from 0x0600. SOEM's config_map
+# writes process-data FMMUs (type 2 = outputs, 1 = inputs) starting at FMMU0.
+_FMMU_BASE = 0x0600
+_FMMU_COUNT = 4
+_FMMU_FORMAT = "<IHBBHBBB"  # LogStart, LogLength, LogStartbit, LogEndbit, PhysStart, PhysStartbit, Type, Active
 
 
 def state_name(code: int | None) -> str:
@@ -109,6 +119,17 @@ class Backend(Protocol):
     def close(self) -> None: ...
 
 
+def refuse_rescan(states: list[dict[str, Any]]) -> None:
+    """Raise if a slave is in SAFEOP or OP: a scan would reset it to INIT."""
+    active = [s for s in states if (s["state_code"] & 0x0F) in (SAFEOP_STATE, OP_STATE)]
+    if active:
+        where = ", ".join(f"{s['position']} ({s['state']})" for s in active)
+        raise EthercatMasterError(
+            f"Refusing to rescan: slave(s) {where} are exchanging process data, and a scan resets every "
+            "slave to INIT. Bring them to PREOP or INIT with set_slave_state first."
+        )
+
+
 def check_slice(image: bytes, offset: int, length: int | None, kind: str, position: int) -> bytes:
     """Cut ``length`` bytes at ``offset`` out of a process-image view, or explain why not."""
     size = len(image)
@@ -142,6 +163,13 @@ class PysoemBackend:
       process data every ``ETHERCAT_CYCLE_TIME`` microseconds.
     * ``close()`` stops the exchange, requests INIT for all slaves if process
       data was running, and closes the interface.
+
+    SOEM packs slaves with fewer than 8 bits of process data into shared bytes,
+    and PySOEM's ``input``/``output`` views return the whole shared byte without
+    the bit offset. The backend therefore reads the slave's FMMU registers after
+    mapping: byte-aligned images are used as they are, bit-packed inputs are
+    masked to the slave's own bits, and writes to bit-packed outputs are refused
+    because they would change a neighbour's outputs.
     """
 
     name = "pysoem"
@@ -162,6 +190,7 @@ class PysoemBackend:
         self._cycle_count = 0
         self._last_wkc: int | None = None
         self._cycle_error: str | None = None
+        self._layouts: dict[int, dict[str, Any] | None] = {}
 
     # -- helpers -----------------------------------------------------------
 
@@ -250,6 +279,49 @@ class PysoemBackend:
             raise EthercatMasterError(f"The cyclic process-data exchange stopped: {self._cycle_error}")
         if self._cycle_thread is None or not self._cycle_thread.is_alive():
             raise EthercatMasterError("The cyclic process-data exchange is not running")
+
+    def _layout(self, position: int, slave: Any) -> dict[str, Any] | None:
+        """Process-data layout of one slave from its FMMU registers (cached), or None if unreadable."""
+        if position in self._layouts:
+            return self._layouts[position]
+        layout: dict[str, Any] | None
+        try:
+            raw = bytes(slave._fprd(_FMMU_BASE, 16 * _FMMU_COUNT))
+        except Exception as exc:  # private PySOEM API: be defensive
+            logger.warning("Could not read the FMMU registers of slave %s: %s", position, exc)
+            layout = None
+        else:
+            layout = {"outputs": [], "inputs": []}
+            for n in range(_FMMU_COUNT):
+                _, length, start_bit, end_bit, _, _, ftype, active = struct.unpack_from(_FMMU_FORMAT, raw, 16 * n)
+                if active and ftype in (1, 2):
+                    layout["outputs" if ftype == 2 else "inputs"].append((length, start_bit, end_bit))
+        self._layouts[position] = layout
+        return layout
+
+    def _alignment(self, position: int, slave: Any, kind: str) -> tuple[int, int] | None:
+        """``None`` if the slave's ``kind`` image is byte-aligned, else ``(first_bit, bit_count)``.
+
+        Raises if the layout cannot be read or cannot be represented by PySOEM's
+        one-byte view (bits spread over two bytes, or several bit FMMUs).
+        """
+        layout = self._layout(position, slave)
+        direction = "outputs" if kind == "output" else "inputs"
+        if layout is None:
+            raise EthercatMasterError(
+                f"Cannot tell whether slave {position}'s {kind} process data is byte-aligned (its FMMU registers "
+                "could not be read), so the access is refused"
+            )
+        fmmus = layout[direction]
+        if all(start == 0 and end == 7 for _, start, end in fmmus):
+            return None
+        if len(fmmus) == 1 and fmmus[0][0] == 1 and fmmus[0][1] <= fmmus[0][2]:
+            _, start, end = fmmus[0]
+            return start, end - start + 1
+        raise EthercatMasterError(
+            f"Slave {position}'s {kind} process data is bit-packed across byte boundaries ({fmmus}); "
+            "this server cannot address it"
+        )
 
     def _expected_wkc(self) -> int | None:
         if self.config.expected_wkc:
@@ -353,14 +425,18 @@ class PysoemBackend:
     def scan(self) -> list[dict[str, Any]]:
         with self._lock:
             master = self._ensure_open()
+            if self._scanned:
+                master.read_state()
+                refuse_rescan([self._state_entry(i, slave) for i, slave in enumerate(self._slaves)])
             self._stop_cycle()
+            self._layouts = {}
             self._mapped = False
             self._io_map_size = None
             self._scanned = False
             self._slaves = []
             master.manual_state_change = 0
             try:
-                found = master.config_init()
+                found = master.config_init(release_gil=True)
             except Exception as exc:
                 raise EthercatMasterError(f"Bus scan failed: {exc}") from exc
             self._slaves = list(master.slaves or []) if found > 0 else []
@@ -387,11 +463,18 @@ class PysoemBackend:
             self._master.read_state()
             self._require_state(position, slave, (SAFEOP_STATE, OP_STATE), "Inputs are only valid in SAFEOP or OP")
         # Wait for one exchange after the state check, so the inputs are current.
+        with self._lock:
+            bits = self._alignment(position, slave, "input")
         self._wait_cycles(1)
         with self._pd_lock:
             image = bytes(slave.input)
-        data = check_slice(image, offset, length, "input", position)
         meta = self._pd_meta()
+        if bits is not None and image:
+            # Keep only this slave's bits of the shared byte, shifted down to bit 0.
+            first, count = bits
+            image = bytes([(image[0] >> first) & ((1 << count) - 1)])
+            meta["bit_packed"] = {"first_bit": first, "bit_count": count}
+        data = check_slice(image, offset, length, "input", position)
         meta["state"] = state_name(int(slave.state))
         return data, meta
 
@@ -401,6 +484,13 @@ class PysoemBackend:
             self._require_cycling()
             self._master.read_state()
             self._require_state(position, slave, (OP_STATE,), "Outputs are only applied in OP")
+            bits = self._alignment(position, slave, "output")
+            if bits is not None:
+                raise EthercatMasterError(
+                    f"Slave {position}'s outputs are bits {bits[0]}-{bits[0] + bits[1] - 1} of a process-image byte "
+                    "shared with other slaves; write_pdo writes whole bytes and would change their outputs, so it "
+                    "is refused"
+                )
             with self._pd_lock:
                 image = bytearray(slave.output)
                 check_slice(bytes(image), offset, len(data), "output", position)
@@ -460,12 +550,14 @@ class PysoemBackend:
             if state in (SAFEOP_STATE, OP_STATE):
                 self._ensure_mapped()
                 self._require_cycling()
-            slave.state = state
+            self._master.read_state()
+            # A slave with its error indicator set ignores requests until the error is acknowledged.
+            request = state | STATE_ACK if int(slave.state) & STATE_ERROR else state
+            slave.state = request
             slave.write_state()
             deadline = time.monotonic() + self.config.timeout_us / 1_000_000
-            reached = slave.state_check(state, _STATE_POLL_US)
-            while reached != state and time.monotonic() < deadline:
-                reached = slave.state_check(state, _STATE_POLL_US)
+            while slave.state_check(state, _STATE_POLL_US) != state and time.monotonic() < deadline:
+                time.sleep(_STATE_POLL_SLEEP_S)
             self._master.read_state()
             entry = self._state_entry(position, slave)
             if int(slave.state) != state:
@@ -503,7 +595,7 @@ class PysoemBackend:
             try:
                 if was_exchanging:
                     # Leave the bus in a defined state, as PySOEM's examples do.
-                    master.state = INIT_STATE
+                    master.state = INIT_STATE | STATE_ACK
                     master.write_state()
             except Exception as exc:  # pragma: no cover - best effort on shutdown
                 logger.warning("Could not request INIT before closing: %s", exc)
@@ -516,6 +608,7 @@ class PysoemBackend:
                     self._scanned = False
                     self._mapped = False
                     self._io_map_size = None
+                    self._layouts = {}
 
 
 # ---------------------------------------------------------------------------
@@ -554,19 +647,9 @@ class EthercatMaster:
         if not self.config.state_change_enabled:
             raise GateError("State changes are disabled (set ETHERCAT_STATE_CHANGE_ENABLED=true to allow them)")
 
-    def _scan_sync(self) -> list[dict[str, Any]]:
-        if self.backend.scanned:
-            active = [s for s in self.backend.read_states() if (s["state_code"] & 0x0F) in (SAFEOP_STATE, OP_STATE)]
-            if active:
-                where = ", ".join(f"{s['position']} ({s['state']})" for s in active)
-                raise EthercatMasterError(
-                    f"Refusing to rescan: slave(s) {where} are exchanging process data, and a scan resets every "
-                    "slave to INIT. Bring them to PREOP or INIT with set_slave_state first."
-                )
-        return self.backend.scan()
-
     async def scan_slaves(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        devices, ms = await self._run(self._scan_sync)
+        # Backends refuse a rescan while a slave is in SAFEOP/OP (checked under their own lock).
+        devices, ms = await self._run(self.backend.scan)
         return devices, {"duration_ms": ms, "count": len(devices)}
 
     def _slave_sync(self, position: int) -> dict[str, Any]:

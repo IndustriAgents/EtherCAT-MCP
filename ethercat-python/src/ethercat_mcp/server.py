@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -96,17 +97,44 @@ class EthercatMCPServer:
         try:
             yield None
         finally:
-            await self.master.close()
+            # Shielded, so the bus is left in a defined state even if the server task is
+            # cancelled (PysoemBackend.close requests INIT if process data ran).
+            with anyio.CancelScope(shield=True):
+                await self.master.close()
+            logger.info("EtherCAT master closed")
 
     def run(self, protocol_out: BinaryIO | None = None) -> None:
         """Serve MCP over stdio. ``protocol_out`` replaces stdout for JSON-RPC (see ``guard_stdout``)."""
         anyio.run(self._run_stdio, protocol_out)
 
     async def _run_stdio(self, protocol_out: BinaryIO | None) -> None:
-        stdout = anyio.wrap_file(TextIOWrapper(protocol_out, encoding="utf-8")) if protocol_out else None
-        lowlevel = self._server._mcp_server
-        async with stdio_server(stdout=stdout) as (read_stream, write_stream):
-            await lowlevel.run(read_stream, write_stream, lowlevel.create_initialization_options())
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(self._stop_on_signal)
+            stdout = anyio.wrap_file(TextIOWrapper(protocol_out, encoding="utf-8")) if protocol_out else None
+            lowlevel = self._server._mcp_server
+            async with stdio_server(stdout=stdout) as (read_stream, write_stream):
+                await lowlevel.run(read_stream, write_stream, lowlevel.create_initialization_options())
+            tg.cancel_scope.cancel()
+
+    async def _stop_on_signal(self) -> None:
+        """Turn SIGTERM/SIGHUP (what MCP clients send on shutdown) and SIGINT into an orderly stop.
+
+        Python's default handler would exit without cleanup, leaving a running
+        process image to the slave watchdogs. Here the master is closed first
+        (PysoemBackend.close requests INIT if process data ran), then the process
+        exits; a normal return would hang on the thread blocked reading stdin.
+        """
+        try:
+            with anyio.open_signal_receiver(signal.SIGTERM, signal.SIGHUP, signal.SIGINT) as signals:
+                async for signum in signals:
+                    logger.info("Received %s, closing the EtherCAT master", signal.Signals(signum).name)
+                    with anyio.CancelScope(shield=True):
+                        await self.master.close()
+                    logger.info("EtherCAT master closed")
+                    sys.stderr.flush()
+                    os._exit(0)
+        except (NotImplementedError, AttributeError):  # pragma: no cover - Windows has no SIGHUP/signal receiver
+            await anyio.sleep_forever()
 
 
 def guard_stdout() -> BinaryIO:
