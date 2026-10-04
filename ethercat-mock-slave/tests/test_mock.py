@@ -82,6 +82,12 @@ def test_output_image_survives_like_a_masters_io_map() -> None:
     assert ok(server, op="read_pdo", position=1)["raw_data_hex"] == "00"  # not applied outside OP
     ok(server, op="set_state", position=2, state="OP")
     assert ok(server, op="read_pdo", position=1)["raw_data_hex"] == "ff"  # stale image re-applied
+    assert ok(server, op="read_outputs", position=2) == {
+        "position": 2,
+        "raw_data_hex": "ff",
+        "applied_hex": "ff",
+        "state": "OP",
+    }
     assert ok(server, op="clear_outputs", position=2)["cleared_bytes"] == 1
     assert ok(server, op="read_pdo", position=1)["raw_data_hex"] == "00"
     ok(server, op="write_pdo", position=2, data=[0x0F])
@@ -158,3 +164,23 @@ def test_help() -> None:
     script = Path(__file__).resolve().parents[1] / "ethercat_mock_slave.py"
     result = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0 and "--update-interval" in result.stdout
+
+
+def test_exit_on_stdin_eof() -> None:
+    """Suite rule 11: with --exit-on-stdin-eof the mock stops when its parent's pipe closes."""
+    script = Path(__file__).resolve().parents[1] / "ethercat_mock_slave.py"
+    proc = subprocess.Popen(
+        [sys.executable, str(script), "--port", "0", "--exit-on-stdin-eof"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert "listening on" in proc.stderr.readline()
+        proc.stdin.close()
+        assert proc.wait(timeout=15) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()

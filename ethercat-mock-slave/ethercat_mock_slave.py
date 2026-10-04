@@ -32,6 +32,7 @@ import os
 import signal
 import struct
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -95,6 +96,7 @@ class MockConfig:
     update_interval: float = 1.0
     verbose: bool = False
     power_on_state: str = "INIT"
+    exit_on_stdin_eof: bool = False
 
 
 @dataclass
@@ -384,6 +386,15 @@ class EthercatMockServer:
             slave.apply_outputs()
             self._loopback()
             return {"position": slave.position, "written_bytes": len(data), "state": slave.state_name}
+        if op == "read_outputs":
+            # The master's output image for this slave, and what the slave applies.
+            slave = self._slave(request)
+            return {
+                "position": slave.position,
+                "raw_data_hex": bytes(slave.outputs).hex(),
+                "applied_hex": bytes(slave.applied).hex(),
+                "state": slave.state_name,
+            }
         if op == "clear_outputs":
             # The master zeroes this slave's part of its output image (allowed in any state).
             slave = self._slave(request)
@@ -487,6 +498,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--verbose", action="store_true", default=_env_bool("MOCK_ETHERCAT_VERBOSE"), help="log every request"
     )
     parser.add_argument(
+        "--exit-on-stdin-eof",
+        action="store_true",
+        help="stop when stdin reaches end-of-file: a test harness keeps a pipe open, and if the harness "
+        "dies the pipe closes and the mock exits instead of lingering",
+    )
+    parser.add_argument(
         "--power-on-state",
         choices=sorted(STATE_CODES),
         type=str.upper,
@@ -509,6 +526,16 @@ async def run_server(config: MockConfig) -> None:
             loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:  # pragma: no cover - Windows
             pass
+    if config.exit_on_stdin_eof:
+
+        def watch_stdin() -> None:
+            # Blocks until the parent closes its end of the pipe (or dies).
+            while sys.stdin.buffer.read(4096):
+                pass
+            logger.info("stdin closed: the parent is gone")
+            loop.call_soon_threadsafe(stop_event.set)
+
+        threading.Thread(target=watch_stdin, name="stdin-watch", daemon=True).start()
     await stop_event.wait()
     logger.info("Stopping EtherCAT mock")
     await server.stop()
@@ -527,6 +554,7 @@ def main(argv: list[str] | None = None) -> None:
         update_interval=args.update_interval,
         verbose=args.verbose,
         power_on_state=args.power_on_state,
+        exit_on_stdin_eof=args.exit_on_stdin_eof,
     )
     try:
         asyncio.run(run_server(config))
