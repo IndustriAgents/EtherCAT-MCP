@@ -13,13 +13,15 @@ concurrency:
 permissions:
   contents: read
 
-# Nothing here needs EtherCAT hardware or raw-socket privileges: every check
-# below either stays in-process or uses tools that never open an interface.
+# Nothing here needs EtherCAT hardware or raw-socket privileges. The PySOEM
+# code paths are unit-tested against a fake pysoem module, and the end-to-end
+# test drives the real server over stdio against the mock slave
+# (ETHERCAT_BACKEND=mock), so no network interface is ever opened.
 jobs:
   server:
     name: MCP server (ethercat-python)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ethercat-python
@@ -33,50 +35,23 @@ jobs:
       - name: Install dependencies from uv.lock
         run: uv sync --locked
 
+      - name: Lint (ruff check)
+        run: uv run --locked ruff check .
+
+      - name: Format (ruff format --check)
+        run: uv run --locked ruff format --check .
+
       - name: Byte-compile sources
         run: uv run --locked python -m compileall -q src
 
-      - name: Import package
-        run: uv run --locked python -c "import ethercat_mcp, ethercat_mcp.cli, ethercat_mcp.esi_parser"
+      - name: CLI help
+        run: uv run --locked ethercat-mcp --help
 
-      # Starts the real console script over stdio and speaks MCP to it.
-      # tools/list and ping never open a network interface.
-      - name: MCP handshake over stdio (initialize, tools/list, ping)
-        run: |
-          uv run --locked python - <<'EOF'
-          import asyncio
-          import json
-          import shutil
-
-          from mcp import ClientSession, StdioServerParameters
-          from mcp.client.stdio import stdio_client
-
-          EXPECTED_TOOLS = {
-              "get_master_status", "get_slave_info", "list_slaves", "load_esi_file",
-              "ping", "read_pdo", "read_sdo", "read_slave_by_alias", "scan_network",
-              "set_slave_state", "test_slave_communication", "write_pdo", "write_sdo",
-              "write_slave_by_alias",
-          }
-
-
-          async def main() -> None:
-              params = StdioServerParameters(command=shutil.which("ethercat-mcp"))
-              async with stdio_client(params) as (read, write):
-                  async with ClientSession(read, write) as session:
-                      init = await session.initialize()
-                      print(f"initialize: {init.serverInfo.name} (protocol {init.protocolVersion})")
-                      names = {tool.name for tool in (await session.list_tools()).tools}
-                      assert names == EXPECTED_TOOLS, f"tool set changed: {sorted(names ^ EXPECTED_TOOLS)}"
-                      print(f"tools/list: {len(names)} tools")
-                      result = await session.call_tool("ping", {})
-                      assert not result.isError, result
-                      envelope = json.loads(result.content[0].text)
-                      assert envelope["success"] is True, envelope
-                      print(f"ping: {envelope}")
-
-
-          asyncio.run(main())
-          EOF
+      # Unit tests (config, codec, ESI parser, PySOEM backend against a fake
+      # pysoem, tools) plus the stdio tests and the end-to-end test that starts
+      # ../ethercat-mock-slave and drives `ethercat-mcp` with the MCP client SDK.
+      - name: Tests (pytest)
+        run: uv run --locked pytest
 
   mock:
     name: Mock slave (ethercat-mock-slave)
@@ -95,56 +70,14 @@ jobs:
       - name: Install dependencies from uv.lock
         run: uv sync --locked
 
-      - name: Byte-compile sources
-        run: uv run --locked python -m compileall -q ethercat_mock_slave.py
+      - name: Lint (ruff check)
+        run: uv run --locked ruff check .
+
+      - name: Format (ruff format --check)
+        run: uv run --locked ruff format --check .
 
       - name: Entry point help
         run: uv run --locked ethercat-mock-slave --help
 
-      # Starts the mock in-process on a free loopback port and drives its
-      # newline-delimited JSON API, then shuts it down.
-      - name: JSON API round trip (scan, read_pdo, write_pdo)
-        run: |
-          uv run --locked python - <<'EOF'
-          import asyncio
-          import json
-          import socket
-
-          from ethercat_mock_slave import EthercatMockServer, MockConfig
-
-
-          def free_port() -> int:
-              with socket.socket() as sock:
-                  sock.bind(("127.0.0.1", 0))
-                  return sock.getsockname()[1]
-
-
-          async def main() -> None:
-              server = EthercatMockServer(MockConfig(host="127.0.0.1", port=free_port()))
-              await server.start()
-              reader, writer = await asyncio.open_connection("127.0.0.1", server.config.port)
-
-              async def ask(request: dict) -> dict:
-                  writer.write(json.dumps(request).encode() + b"\n")
-                  await writer.drain()
-                  return json.loads(await asyncio.wait_for(reader.readline(), timeout=10))
-
-              try:
-                  scan = await ask({"op": "scan"})
-                  assert scan["success"] and scan["data"][0]["name"] == "EK1100", scan
-                  pdo = await ask({"op": "read_pdo", "position": 0, "length": 8})
-                  assert pdo["success"] and len(pdo["data"]["raw_data_hex"]) == 16, pdo
-                  wrote = await ask({"op": "write_pdo", "position": 0, "data": [1, 0, 0, 0]})
-                  assert wrote["success"] and wrote["data"]["written_bytes"] == 4, wrote
-                  missing = await ask({"op": "read_pdo", "position": 99, "length": 1})
-                  assert missing["success"] is False, missing
-                  print("mock JSON API ok:", scan["data"])
-              finally:
-                  # Close the client first: Server.wait_closed() waits for open connections.
-                  writer.close()
-                  await writer.wait_closed()
-                  await server.stop()
-
-
-          asyncio.run(main())
-          EOF
+      - name: Tests (pytest)
+        run: uv run --locked pytest

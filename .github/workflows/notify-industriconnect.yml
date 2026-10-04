@@ -6,9 +6,13 @@ on:
   push:
     branches: [main]
 
+# The job only uses the INDUSTRICONNECT_DISPATCH_TOKEN secret, never GITHUB_TOKEN.
+permissions: {}
+
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Dispatch submodule sync
         env:
