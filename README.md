@@ -332,7 +332,10 @@ strings such as `"0x10"`:
   the call (`notifications/cancelled`), or the client disconnects (stdin
   closes), the token is cancelled first: a call that had not reached its send
   point ends `not_sent` and is never sent afterwards, even if it was queued
-  behind another call; one that had is `unknown`. A read ends with an error.
+  behind another call; one that had is `unknown`. The send check also reads
+  the MCP SDK's own cancellation flag for the request, which is set the moment
+  the client cancels, so a call that is cancelled just as it gets the bus does
+  not slip through. A read ends with an error.
   SOEM cannot interrupt `config_init` or `config_map`, so they only start with
   at least 10 s of the deadline left. An SDO transfer is budgeted for the
   worst case, because PySOEM does not report the slave's mailbox size: the

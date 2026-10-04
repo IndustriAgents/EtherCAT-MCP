@@ -12,6 +12,7 @@ write_state/state_check`` and the ``input``/``output`` process-image views).
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import struct
 import threading
@@ -155,6 +156,13 @@ def unknown_outcome(message: str) -> EthercatMasterError:
 # How often a call queued behind the backend lock re-checks whether it was cancelled.
 _LOCK_POLL_S = 0.05
 
+# The MCP request's cancel scope, set by the server for the duration of a tool call. The MCP
+# SDK's RequestResponder.cancel() sets scope.cancel_called synchronously, before CancelledError
+# reaches EthercatMaster._run, so CallToken reads it directly (suite rule: CANCEL RACE).
+REQUEST_CANCEL_SCOPE: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "ethercat_request_cancel_scope", default=None
+)
+
 
 class CallToken:
     """One tool call's permission to send anything to the bus or the mock.
@@ -168,10 +176,13 @@ class CallToken:
     decide under one lock, so the outcome is never ambiguous.
     """
 
-    def __init__(self, deadline_s: float | None = None) -> None:
+    def __init__(self, deadline_s: float | None = None, request_scope: Any = None) -> None:
         self._deadline = None if deadline_s is None else time.monotonic() + deadline_s
         self._lock = threading.Lock()
         self._reason: str | None = None
+        # The MCP request's anyio CancelScope, if any. Its cancel_called is a plain bool, so
+        # reading it from the worker thread is safe.
+        self._request_scope = request_scope
         self.sent = False
 
     def remaining(self) -> float | None:
@@ -189,6 +200,9 @@ class CallToken:
             return self.sent
 
     def _stopped(self) -> bool:
+        if self._reason is None and getattr(self._request_scope, "cancel_called", False):
+            # The client cancelled: the SDK set this before our CancelledError handling runs.
+            self._reason = "the client cancelled the call"
         if self._reason is None and self._deadline is not None and time.monotonic() >= self._deadline:
             self._reason = "its overall deadline passed"
         return self._reason is not None
@@ -1113,7 +1127,8 @@ class EthercatMaster:
         if self._closing is not None:
             raise EthercatMasterError(f"Not sent: {self._closing}.")
         deadline = self.config.call_deadline_s + extra_s
-        token = CallToken(deadline)
+        token = CallToken(deadline, request_scope=REQUEST_CANCEL_SCOPE.get())
+        await anyio.lowlevel.checkpoint_if_cancelled()  # defence in depth on the async side
         self._pending.add(token)
         start = time.perf_counter()
         try:

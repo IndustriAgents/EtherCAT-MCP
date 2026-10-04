@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from ._version import __version__
 from .config import EthercatConfig
-from .ec_master import EthercatMaster
+from .ec_master import REQUEST_CANCEL_SCOPE, EthercatMaster
 from .esi_parser import ESIParser
 from .tools import SlaveMap, ToolResources, envelope, register_tools
 
@@ -48,7 +48,30 @@ class EnvelopeFastMCP(FastMCP):
         super().__init__(*args, **kwargs)
         self._envelope_meta = envelope_meta
 
+    def request_cancel_scope(self) -> Any:
+        """The anyio CancelScope the MCP SDK cancels for notifications/cancelled, or None.
+
+        Private mcp<2 API (RequestContext.session._in_flight[request_id]._cancel_scope),
+        hence the guarded lookups; tests/test_mcp_internals.py fails if it moves.
+        """
+        try:
+            context = self._mcp_server.request_context
+        except LookupError:
+            return None
+        in_flight = getattr(getattr(context, "session", None), "_in_flight", None)
+        if not isinstance(in_flight, dict):
+            return None
+        responder = in_flight.get(getattr(context, "request_id", None))
+        return getattr(responder, "_cancel_scope", None)
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[Any] | dict[str, Any]:
+        scope_token = REQUEST_CANCEL_SCOPE.set(self.request_cancel_scope())
+        try:
+            return await self._call_tool(name, arguments)
+        finally:
+            REQUEST_CANCEL_SCOPE.reset(scope_token)
+
+    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[Any] | dict[str, Any]:
         try:
             return await super().call_tool(name, arguments)
         except ToolError as exc:

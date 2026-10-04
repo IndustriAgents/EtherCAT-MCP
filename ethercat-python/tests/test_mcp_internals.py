@@ -57,3 +57,21 @@ def test_argument_validation_errors_still_reach_call_tool_as_tool_errors() -> No
 
     cause = anyio.run(call)
     assert isinstance(cause, ValidationError), f"argument errors now surface as {type(cause).__name__}"
+
+
+def test_request_cancel_scope_internals_exist() -> None:
+    """EnvelopeFastMCP.request_cancel_scope reads RequestContext.session._in_flight[request_id]._cancel_scope.
+
+    The SDK sets that scope's cancel_called synchronously when the client cancels, before
+    CancelledError reaches the tool; CallToken.begin_send relies on it (the cancel race).
+    """
+    import inspect
+
+    from mcp.shared.context import RequestContext
+    from mcp.shared.session import BaseSession, RequestResponder
+
+    assert "_cancel_scope" in inspect.getsource(RequestResponder.__init__), "RequestResponder._cancel_scope moved"
+    assert "self._cancel_scope.cancel()" in inspect.getsource(RequestResponder.cancel)
+    assert "_in_flight" in inspect.getsource(BaseSession.__init__), "BaseSession._in_flight moved"
+    fields = getattr(RequestContext, "__dataclass_fields__", {})
+    assert {"request_id", "session"} <= set(fields), "RequestContext no longer has request_id/session"

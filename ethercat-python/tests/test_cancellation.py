@@ -587,3 +587,123 @@ async def test_stdin_eof_cancels_pending_calls_and_refuses_new_ones(tmp_path: Pa
         pending.begin_send()
     with pytest.raises(EthercatMasterError, match="Not sent: the MCP client disconnected"):
         await server.master.write_sdo(3, 0x8000, 6, b"\x01")
+
+
+# -- CANCEL RACE: the SDK marks the request cancelled before CancelledError reaches us -------
+
+
+class GrantThenCancelLock:
+    """Wraps the backend lock: the first time it is granted, the MCP request is cancelled in the
+    same step (on the event loop thread, synchronously, as RequestResponder.cancel() does), and
+    the worker carries straight on towards its send point."""
+
+    def __init__(self, inner, scope: anyio.CancelScope) -> None:
+        self._inner = inner
+        self._scope = scope
+        self._fired = False
+
+    def acquire(self, *args, **kwargs):
+        got = self._inner.acquire(*args, **kwargs)
+        if got and not self._fired:
+            self._fired = True
+            anyio.from_thread.run_sync(self._scope.cancel)
+        return got
+
+    def release(self):
+        self._inner.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["write_pdo", "write_sdo"])
+async def test_a_cancel_in_the_same_step_as_the_lock_grant_never_sends(operation: str) -> None:
+    from ethercat_mcp.ec_master import REQUEST_CANCEL_SCOPE
+
+    master, backend, fake = master_with_fake()
+    real_lock = backend._lock
+    try:
+        for _ in range(40):
+            with anyio.CancelScope() as scope:
+                backend._lock = GrantThenCancelLock(real_lock, scope)
+                reset = REQUEST_CANCEL_SCOPE.set(scope)
+                try:
+                    if operation == "write_pdo":
+                        await master.write_pdo(2, 0, b"\xa5")
+                    else:
+                        await master.write_sdo(3, 0x8000, 6, b"\x01")
+                finally:
+                    REQUEST_CANCEL_SCOPE.reset(reset)
+            assert scope.cancelled_caught or scope.cancel_called
+            backend._lock = real_lock
+        time.sleep(0.2)  # let any abandoned worker finish
+        assert backend._slaves[2].output == b"\x00"
+        assert fake.device(2).applied_outputs == b"\x00"
+        assert fake.device(3).objects[(0x8000, 6)][0] == b"\x00"
+        assert not [call for call in backend._slaves[3].sdo_calls if call[0] == "write"]
+    finally:
+        backend._lock = real_lock
+        await master.close()
+
+
+@pytest.mark.anyio
+async def test_a_cancel_in_the_same_step_as_the_mock_connection_never_sends(
+    proxy: LoggingProxy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ethercat_mcp import mock_bridge
+    from ethercat_mcp.ec_master import REQUEST_CANCEL_SCOPE
+
+    config = EthercatConfig.from_env({"ETHERCAT_BACKEND": "mock", "ETHERCAT_MOCK_PORT": str(proxy.port), **GATES})
+    master = EthercatMaster(config)
+    await master.scan_slaves()
+    connect = socket.create_connection
+    current: dict[str, anyio.CancelScope] = {}
+
+    def connect_then_cancel(*args, **kwargs):
+        sock = connect(*args, **kwargs)
+        anyio.from_thread.run_sync(current["scope"].cancel)  # the cancel lands as the connect completes
+        return sock
+
+    monkeypatch.setattr(mock_bridge.socket, "create_connection", connect_then_cancel)
+    try:
+        for _ in range(20):
+            with anyio.CancelScope() as scope:
+                current["scope"] = scope
+                reset = REQUEST_CANCEL_SCOPE.set(scope)
+                try:
+                    await master.write_sdo(3, 0x8000, 6, b"\x01")
+                finally:
+                    REQUEST_CANCEL_SCOPE.reset(reset)
+        time.sleep(0.3)
+        assert "write_sdo" not in proxy.arrived, proxy.arrived
+    finally:
+        await master.close()
+
+
+@pytest.mark.anyio
+async def test_tool_calls_see_the_sdk_request_cancel_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Through the real MCP SDK (in-memory transport): the tool call captures the request's scope."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from ethercat_mcp import ec_master
+    from ethercat_mcp.server import EthercatMCPServer
+
+    seen: list[object] = []
+    original = ec_master.EthercatMaster._run
+
+    async def recording_run(self, func, *args, **kwargs):
+        seen.append(ec_master.REQUEST_CANCEL_SCOPE.get())
+        return await original(self, func, *args, **kwargs)
+
+    monkeypatch.setattr(ec_master.EthercatMaster, "_run", recording_run)
+    config = EthercatConfig.from_env({"ETHERCAT_BACKEND": "mock", "ETHERCAT_MOCK_PORT": "9"})
+    server = EthercatMCPServer(config)
+    async with create_connected_server_and_client_session(server.mcp) as client:
+        await client.call_tool("scan_network", {})
+    assert seen and isinstance(seen[0], anyio.CancelScope), seen
+    assert ec_master.REQUEST_CANCEL_SCOPE.get() is None  # reset after the call
