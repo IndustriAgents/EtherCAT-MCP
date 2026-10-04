@@ -1,16 +1,13 @@
 [project]
 name = "ethercat-mock-slave"
 version = "0.1.0"
-description = "Mock EtherCAT slave for MCP integration testing."
+description = "Mock EtherCAT slaves (JSON over TCP) for testing the EtherCAT MCP server without hardware."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
-dependencies = [
-    "anyio>=4.0.0",
-    "rich>=13.7.0",
-    "python-dotenv>=1.1.0",
-]
+# Standard library only.
+dependencies = []
 
 [project.urls]
 Repository = "https://github.com/IndustriAgents/EtherCAT-MCP"
@@ -18,6 +15,26 @@ Repository = "https://github.com/IndustriAgents/EtherCAT-MCP"
 [project.scripts]
 ethercat-mock-slave = "ethercat_mock_slave:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.16.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["ethercat_mock_slave.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
