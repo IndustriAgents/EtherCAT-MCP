@@ -14,6 +14,10 @@ from pathlib import Path
 
 BACKENDS = ("pysoem", "mock")
 
+# Safety switches. Suite rule: they are honoured only from the real process environment or an
+# explicit --env-file, never from a .env file found automatically (see cli.load_env_file).
+GATE_VARIABLES = ("ETHERCAT_WRITES_ENABLED", "ETHERCAT_STATE_CHANGE_ENABLED")
+
 _TRUE = {"1", "true", "yes", "y", "on"}
 _FALSE = {"0", "false", "no", "n", "off", ""}
 
@@ -65,6 +69,7 @@ class EthercatConfig:
     cycle_time_us: int = 1000
     timeout_us: int = 500_000
     expected_wkc: int = 0
+    pd_watchdog_ms: int = 100
     writes_enabled: bool = False
     state_change_enabled: bool = False
     slave_map_path: Path | None = None
@@ -89,10 +94,18 @@ class EthercatConfig:
         mock_host = _get(env, "ETHERCAT_MOCK_HOST", "127.0.0.1")
         if not mock_host:
             raise ConfigError("ETHERCAT_MOCK_HOST is empty")
+        cycle_time_us = _int(env, "ETHERCAT_CYCLE_TIME", 1000, minimum=100, maximum=1_000_000)
+        pd_watchdog_ms = _int(env, "ETHERCAT_PD_WATCHDOG_MS", 100, minimum=1, maximum=6000)
+        if pd_watchdog_ms * 1000 < 3 * cycle_time_us:
+            raise ConfigError(
+                f"ETHERCAT_PD_WATCHDOG_MS={pd_watchdog_ms} is too short for ETHERCAT_CYCLE_TIME={cycle_time_us} us "
+                "(use at least three cycles)"
+            )
         return cls(
             backend=backend,
             interface=interface,
-            cycle_time_us=_int(env, "ETHERCAT_CYCLE_TIME", 1000, minimum=100, maximum=1_000_000),
+            cycle_time_us=cycle_time_us,
+            pd_watchdog_ms=pd_watchdog_ms,
             timeout_us=_int(env, "ETHERCAT_TIMEOUT", 500_000, minimum=1000, maximum=60_000_000),
             expected_wkc=_int(env, "ETHERCAT_EXPECTED_WKC", 0, minimum=0, maximum=0xFFFF),
             writes_enabled=_bool(env, "ETHERCAT_WRITES_ENABLED", False),
@@ -106,3 +119,8 @@ class EthercatConfig:
     @property
     def is_mock(self) -> bool:
         return self.backend == "mock"
+
+    @property
+    def state_changes_allowed(self) -> bool:
+        """State changes need both gates (suite rule: a separate gate never replaces the write gate)."""
+        return self.writes_enabled and self.state_change_enabled

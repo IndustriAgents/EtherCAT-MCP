@@ -6,14 +6,15 @@ import argparse
 import dataclasses
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from ._version import __version__
-from .config import ConfigError, EthercatConfig
+from .config import GATE_VARIABLES, ConfigError, EthercatConfig
 
 logger = logging.getLogger("ethercat_mcp")
 
@@ -23,16 +24,21 @@ settings (environment variables, or a .env file):
   ETHERCAT_INTERFACE             network interface PySOEM opens (default eth0)
   ETHERCAT_CYCLE_TIME            process-data cycle in microseconds (default 1000)
   ETHERCAT_TIMEOUT               state-change and mock-request timeout in microseconds (default 500000)
-  ETHERCAT_EXPECTED_WKC          minimum working counter for write_pdo (default 0 = only require > 0)
+  ETHERCAT_EXPECTED_WKC          working counter process data must reach (default 0 = the group's own
+                                 expected count when every process-data slave is up, else > 0)
+  ETHERCAT_PD_WATCHDOG_MS        process-data watchdog set on slaves with outputs (default 100)
   ETHERCAT_WRITES_ENABLED        allow write_pdo/write_sdo/write_slave_by_alias (default false)
-  ETHERCAT_STATE_CHANGE_ENABLED  allow set_slave_state (default false)
+  ETHERCAT_STATE_CHANGE_ENABLED  with ETHERCAT_WRITES_ENABLED, allow set_slave_state (default false)
   ETHERCAT_MOCK_HOST / _PORT     mock slave address for ETHERCAT_BACKEND=mock (default 127.0.0.1:6700)
   SLAVE_MAP_FILE                 JSON file of slave aliases
   ETHERCAT_ESI_PATH              directory searched for ESI files
 
-Variables already set in the environment win over the .env file. sudo drops
-the caller's environment, so under sudo put the settings on the command line
-(sudo ETHERCAT_INTERFACE=eth0 .venv/bin/ethercat-mcp) or use --env-file.
+Variables already set in the environment win over the .env file. The gates
+(ETHERCAT_WRITES_ENABLED, ETHERCAT_STATE_CHANGE_ENABLED) are only read from the
+real environment or --env-file, never from an automatically found ./.env.
+sudo drops the caller's environment, so under sudo put the settings on the
+command line (sudo ETHERCAT_INTERFACE=eth0 .venv/bin/ethercat-mcp) or use
+--env-file.
 """
 
 
@@ -48,7 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--env-file",
         type=Path,
         metavar="PATH",
-        help="load settings from PATH instead of ./.env (the .env in the current directory)",
+        help="load settings from PATH instead of ./.env (the .env in the current directory); "
+        "unlike ./.env, this file may also turn the write and state-change gates on",
     )
     parser.add_argument(
         "--print-config",
@@ -59,7 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def load_env_file(env_file: Path | None) -> Path | None:
-    """Load ``env_file``, or ``./.env`` if it exists. Never searches parent directories."""
+    """Load ``env_file``, or ``./.env`` if it exists. Never searches parent directories.
+
+    An explicit ``--env-file`` is trusted like the environment. A ``./.env`` that is
+    merely found may set connection settings but never the safety gates: with a
+    direct venv launch the working directory is the MCP client's project, which may
+    not be trusted. Gate variables in it are ignored with a warning.
+    """
     if env_file is not None:
         path = env_file.expanduser()
         if not path.is_file():
@@ -67,10 +80,20 @@ def load_env_file(env_file: Path | None) -> Path | None:
         load_dotenv(path, override=False)
         return path
     candidate = Path.cwd() / ".env"
-    if candidate.is_file():
-        load_dotenv(candidate, override=False)
-        return candidate
-    return None
+    if not candidate.is_file():
+        return None
+    for key, value in dotenv_values(candidate).items():
+        if value is None:
+            continue
+        if key in GATE_VARIABLES:
+            logger.warning(
+                "Ignoring %s from %s: safety switches are only read from the process environment or --env-file",
+                key,
+                candidate,
+            )
+            continue
+        os.environ.setdefault(key, value)
+    return candidate
 
 
 def config_summary(config: EthercatConfig, env_file: Path | None = None) -> dict[str, Any]:

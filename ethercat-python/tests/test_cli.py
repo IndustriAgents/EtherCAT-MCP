@@ -1,4 +1,4 @@
-"""CLI arguments and .env handling (known issues 4 and 10; review finding 3)."""
+"""CLI arguments and .env handling (known issues 4 and 10; review finding 3; suite rule 3)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 CLI = [sys.executable, "-m", "ethercat_mcp"]
@@ -34,25 +35,47 @@ def test_help_prints_usage_and_exits(tmp_path: Path) -> None:
 def test_version(tmp_path: Path) -> None:
     result = run("--version", cwd=tmp_path)
     assert result.returncode == 0
-    assert result.stdout.strip() == "ethercat-mcp 0.1.0"
+    assert result.stdout.strip() == f"ethercat-mcp {version('ethercat-mcp')}"
+
+
+def config_and_stderr(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> tuple[dict, str]:
+    result = run("--print-config", *args, cwd=tmp_path, env=env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout), result.stderr
 
 
 def config(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> dict:
-    result = run("--print-config", *args, cwd=tmp_path, env=env)
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
+    return config_and_stderr(tmp_path, *args, env=env)[0]
 
 
-def test_dotenv_in_the_working_directory_reaches_every_setting(tmp_path: Path) -> None:
-    (tmp_path / ".env").write_text(
-        "ETHERCAT_INTERFACE=enp9s0\nETHERCAT_CYCLE_TIME=4000\nETHERCAT_STATE_CHANGE_ENABLED=true\n"
-    )
+def test_dotenv_in_the_working_directory_reaches_connection_settings(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("ETHERCAT_INTERFACE=enp9s0\nETHERCAT_CYCLE_TIME=4000\nETHERCAT_PD_WATCHDOG_MS=50\n")
     cfg = config(tmp_path)
     assert cfg["interface"] == "enp9s0"
     assert cfg["cycle_time_us"] == 4000
-    assert cfg["state_change_enabled"] is True
-    assert cfg["writes_enabled"] is False
+    assert cfg["pd_watchdog_ms"] == 50
     assert cfg["env_file"] == str(tmp_path / ".env")
+
+
+def test_implicit_dotenv_cannot_turn_gates_on(tmp_path: Path) -> None:
+    """Suite rule 3: the MCP client's working directory may be an untrusted project."""
+    (tmp_path / ".env").write_text(
+        "ETHERCAT_WRITES_ENABLED=true\nETHERCAT_STATE_CHANGE_ENABLED=true\nETHERCAT_INTERFACE=enp9s0\n"
+    )
+    cfg, stderr = config_and_stderr(tmp_path)
+    assert cfg["writes_enabled"] is False
+    assert cfg["state_change_enabled"] is False
+    assert cfg["interface"] == "enp9s0"  # connection settings still apply
+    for name in ("ETHERCAT_WRITES_ENABLED", "ETHERCAT_STATE_CHANGE_ENABLED"):
+        assert f"Ignoring {name} from {tmp_path / '.env'}" in stderr
+
+
+def test_gates_from_the_environment_or_an_explicit_env_file_are_honoured(tmp_path: Path) -> None:
+    assert config(tmp_path, env={"ETHERCAT_WRITES_ENABLED": "true"})["writes_enabled"] is True
+    explicit = tmp_path / "bench.env"
+    explicit.write_text("ETHERCAT_WRITES_ENABLED=true\nETHERCAT_STATE_CHANGE_ENABLED=true\n")
+    cfg = config(tmp_path, "--env-file", str(explicit))
+    assert cfg["writes_enabled"] is True and cfg["state_change_enabled"] is True
 
 
 def test_dotenv_in_a_parent_directory_is_ignored(tmp_path: Path) -> None:
