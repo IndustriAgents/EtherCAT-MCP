@@ -14,16 +14,18 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import StrictInt
 
 from ._version import __version__
 from .codec import decode_value, encode_value, parse_bytes, parse_int
 from .config import EthercatConfig
-from .ec_master import EthercatMaster, parse_state
+from .ec_master import NOT_SENT, WRITTEN, EthercatMaster, parse_state
 from .esi_parser import ESIParser
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-# A scan does not drive outputs, but SOEM resets every slave to INIT and then PRE-OP.
-SCAN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+# A scan does not drive outputs, but SOEM resets every slave on the segment to INIT and then PRE-OP.
+SCAN = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
+MAX_PDO_BYTES = 4096  # SOEM's process image (EC_IOMAPSIZE) is 4096 bytes
 WRITES = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
 
 
@@ -137,9 +139,20 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     def _position(value: Any) -> int:
         return parse_int(value, "slave_position", minimum=0)
 
+    def _not_sent(message: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
+        return _err(message, {**(meta or {}), "outcome": NOT_SENT, "request_sent": False})
+
+    def _write_failed(exc: Exception, meta: dict[str, Any]) -> dict[str, Any]:
+        """Envelope for a device-changing request that failed: say whether it may have been applied."""
+        outcome = getattr(exc, "outcome", NOT_SENT)
+        return _err(str(exc), {**meta, "outcome": outcome, "request_sent": outcome != NOT_SENT})
+
+    def _written(meta: dict[str, Any]) -> dict[str, Any]:
+        return {**meta, "outcome": meta.get("outcome", WRITTEN), "request_sent": True}
+
     def _writes_refused(tool: str) -> dict[str, Any] | None:
         if not config.writes_enabled:
-            return _err(
+            return _not_sent(
                 "Write operations are disabled (set ETHERCAT_WRITES_ENABLED=true to allow them)", {"tool": tool}
             )
         return None
@@ -150,8 +163,12 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     async def scan_network() -> dict[str, Any]:
         """Enumerate the slaves on the bus (PySOEM config_init) and return their identity and state.
 
-        Not passive: SOEM resets every slave to INIT and then requests PRE-OP while it
-        enumerates. The tool refuses to rescan while a slave is in SAFEOP or OP.
+        Not passive: SOEM resets every slave on the segment to INIT and then requests
+        PRE-OP while it enumerates. Before that, one broadcast read checks the segment:
+        if any slave is in SAFEOP or OP (another master may be running it), the scan is
+        refused unless both ETHERCAT_WRITES_ENABLED and ETHERCAT_STATE_CHANGE_ENABLED are
+        true. A rescan is always refused while a slave this server brought up is in
+        SAFEOP or OP.
         Returns position, name, vendor ID, product code, revision, AL state and the
         process-data sizes (null on a real bus until the process image is mapped).
         """
@@ -162,7 +179,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         return _ok(data={"slaves": devices}, meta=meta)
 
     @server.tool(annotations=READ_ONLY)
-    async def get_slave_info(slave_position: int) -> dict[str, Any]:
+    async def get_slave_info(slave_position: StrictInt) -> dict[str, Any]:
         """Return one slave from the last scan, with its AL state read fresh from the bus.
 
         Args:
@@ -176,7 +193,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         return _ok(data=entry, meta={**meta, "slave_position": position})
 
     @server.tool(annotations=READ_ONLY)
-    async def test_slave_communication(slave_position: int) -> dict[str, Any]:
+    async def test_slave_communication(slave_position: StrictInt) -> dict[str, Any]:
         """Check that a slave answers: read its AL state, then try a CoE read of object 0x1000.
 
         success is false if the slave does not answer the state read. A slave without
@@ -195,13 +212,17 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     # -- process data -------------------------------------------------------
 
     @server.tool(annotations=READ_ONLY)
-    async def read_pdo(slave_position: int, offset: int = 0, length: int | None = None) -> dict[str, Any]:
+    async def read_pdo(
+        slave_position: StrictInt, offset: StrictInt = 0, length: StrictInt | None = None
+    ) -> dict[str, Any]:
         """Read input process data (TxPDO) bytes of one slave from the cyclic process image.
 
         Inputs only exist once the process image is mapped and are only valid while the
-        slave is in SAFEOP or OP (use set_slave_state first). Errors otherwise. For a
-        slave with fewer than 8 input bits, only its own bits are returned, shifted to
-        bit 0 (meta.bit_packed).
+        slave is in SAFEOP or OP (use set_slave_state first). Errors otherwise, and also
+        when the last frame's working counter shows that it was lost or (with every
+        process-data slave in SAFEOP/OP) that a slave did not process it. For a slave
+        with fewer than 8 input bits, only its own bits are returned, shifted to bit 0
+        (meta.bit_packed).
 
         Args:
             slave_position: 0-based position on the bus.
@@ -222,15 +243,17 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         )
 
     @server.tool(annotations=WRITES)
-    async def write_pdo(slave_position: int, offset: int, data: list[int]) -> dict[str, Any]:
+    async def write_pdo(slave_position: StrictInt, offset: StrictInt, data: list[StrictInt]) -> dict[str, Any]:
         """Write output process data (RxPDO) bytes of one slave into the cyclic process image.
 
         Needs ETHERCAT_WRITES_ENABLED=true (off by default). The slave must be in OP,
-        because outputs are not applied in any other state. success means the bytes
-        went out in the cyclic frame and the frame came back with a working counter
-        above 0 (or at least ETHERCAT_EXPECTED_WKC); that counter covers the whole
-        frame, not just this slave. Refused for slaves whose outputs are bit-packed
-        into a byte shared with other slaves.
+        because outputs are not applied in any other state. The bytes stay in the image
+        and go out with every cycle; the request is never repeated. success means they
+        went out and were confirmed: by the full expected working counter when every
+        process-data slave is in OP (meta.verified "expected_wkc"), otherwise by the
+        target still being in OP without error (meta.verified "slave_state"). If that
+        cannot be confirmed, meta.outcome is "unknown": read back before retrying.
+        Refused for slaves whose outputs are bit-packed into a byte shared with others.
 
         Args:
             slave_position: 0-based position on the bus.
@@ -243,17 +266,19 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         try:
             position = _position(slave_position)
             start = parse_int(offset, "offset", minimum=0)
-            payload = parse_bytes(data)
+            payload = parse_bytes(data, max_length=MAX_PDO_BYTES)
             meta = await master.write_pdo(position, start, payload)
         except Exception as exc:
-            return _err(str(exc), {"slave_position": slave_position})
-        return _ok(data={"slave_position": position, "offset": start, "written_bytes": len(payload)}, meta=meta)
+            return _write_failed(exc, {"slave_position": slave_position})
+        return _ok(
+            data={"slave_position": position, "offset": start, "written_bytes": len(payload)}, meta=_written(meta)
+        )
 
     # -- CoE / SDO ----------------------------------------------------------
 
     @server.tool(annotations=READ_ONLY)
     async def read_sdo(
-        slave_position: int, index: str | int, subindex: int = 0, data_type: str | None = None
+        slave_position: StrictInt, index: str | StrictInt, subindex: StrictInt = 0, data_type: str | None = None
     ) -> dict[str, Any]:
         """Read a CoE object (SDO upload) from a slave's object dictionary.
 
@@ -280,12 +305,14 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
     @server.tool(annotations=WRITES)
     async def write_sdo(
-        slave_position: int, index: str | int, subindex: int, value: Any, data_type: str | None = None
+        slave_position: StrictInt, index: str | StrictInt, subindex: StrictInt, value: Any, data_type: str | None = None
     ) -> dict[str, Any]:
         """Write a CoE object (SDO download) in a slave's object dictionary.
 
         Needs ETHERCAT_WRITES_ENABLED=true (off by default). success means the slave
-        acknowledged the download.
+        acknowledged the download. The download is never repeated: if the answer is
+        lost, meta.outcome is "unknown" (read back before retrying); an SDO abort is
+        "rejected".
 
         Args:
             slave_position: 0-based position on the bus.
@@ -305,7 +332,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             payload, dtype = encode_value(value, data_type)
             meta = await master.write_sdo(position, idx, sub, payload)
         except Exception as exc:
-            return _err(str(exc), {"slave_position": slave_position})
+            return _write_failed(exc, {"slave_position": slave_position})
         return _ok(
             data={
                 "slave_position": position,
@@ -315,28 +342,32 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 "data_type": dtype,
                 "raw_hex": payload.hex(),
             },
-            meta=meta,
+            meta=_written(meta),
         )
 
     # -- state machine ------------------------------------------------------
 
     @server.tool(annotations=WRITES)
-    async def set_slave_state(slave_position: int, state: str) -> dict[str, Any]:
+    async def set_slave_state(slave_position: StrictInt, state: str) -> dict[str, Any]:
         """Request an AL state for one slave and wait until it is reached or ETHERCAT_TIMEOUT expires.
 
-        Needs ETHERCAT_STATE_CHANGE_ENABLED=true (off by default). On a real bus, the
-        first request for SAFEOP or OP maps the process image and starts the cyclic
-        process-data exchange. A pending AL error on the slave is acknowledged.
-        Follow the EtherCAT state machine: INIT -> PREOP -> SAFEOP -> OP.
-        success means the slave reports the requested state.
+        Needs both ETHERCAT_WRITES_ENABLED=true and ETHERCAT_STATE_CHANGE_ENABLED=true
+        (both off by default). On a real bus, the first request for SAFEOP or OP maps the
+        process image (zeroed) and starts the cyclic process-data exchange. A slave's
+        outputs are zeroed in the image before it enters OP and whenever it ends up
+        outside OP, so stale outputs are never re-applied. A pending AL error on the
+        slave is acknowledged. Follow the EtherCAT state machine: INIT -> PREOP ->
+        SAFEOP -> OP. success means the slave reports the requested state; a refusal is
+        meta.outcome "rejected", a timeout "unknown".
 
         Args:
             slave_position: 0-based position on the bus.
             state: INIT, PREOP, SAFEOP or OP.
         """
-        if not config.state_change_enabled:
-            return _err(
-                "State changes are disabled (set ETHERCAT_STATE_CHANGE_ENABLED=true to allow them)",
+        if not config.state_changes_allowed:
+            return _not_sent(
+                "State changes are disabled (they need both ETHERCAT_WRITES_ENABLED=true and "
+                "ETHERCAT_STATE_CHANGE_ENABLED=true)",
                 {"tool": "set_slave_state"},
             )
         try:
@@ -344,8 +375,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             desired = parse_state(state)
             result, meta = await master.set_slave_state(position, desired)
         except Exception as exc:
-            return _err(str(exc), {"slave_position": slave_position, "state": state})
-        return _ok(data={"slave_position": position, **result}, meta=meta)
+            return _write_failed(exc, {"slave_position": slave_position, "state": state})
+        outcome = result.pop("outcome", WRITTEN)
+        return _ok(data={"slave_position": position, **result}, meta=_written({**meta, "outcome": outcome}))
 
     # -- slave aliases --------------------------------------------------------
 
@@ -362,7 +394,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         return _ok(data={"slaves": slaves, "count": len(slaves)})
 
     @server.tool(annotations=READ_ONLY)
-    async def read_slave_by_alias(alias: str, length: int | None = None) -> dict[str, Any]:
+    async def read_slave_by_alias(alias: str, length: StrictInt | None = None) -> dict[str, Any]:
         """Read input process data for an alias from SLAVE_MAP_FILE (same rules as read_pdo).
 
         Args:
@@ -379,7 +411,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         return result
 
     @server.tool(annotations=WRITES)
-    async def write_slave_by_alias(alias: str, data: list[int]) -> dict[str, Any]:
+    async def write_slave_by_alias(alias: str, data: list[StrictInt]) -> dict[str, Any]:
         """Write output process data for an alias from SLAVE_MAP_FILE (same rules and gate as write_pdo).
 
         Args:
@@ -392,7 +424,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         try:
             position, offset, _ = resources.slave_map.resolve(alias)
         except ValueError as exc:
-            return _err(str(exc), {"alias": alias})
+            return _not_sent(str(exc), {"alias": alias})
         result = await write_pdo(position, offset, data)
         result["meta"]["alias"] = alias
         return result

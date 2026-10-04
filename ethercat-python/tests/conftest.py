@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import json
+import queue
+import re
+import subprocess
 import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -40,3 +46,40 @@ def envelope_from(result: Any) -> dict[str, Any]:
     if isinstance(result, dict):
         return result
     return json.loads(result[0].text)
+
+
+@contextmanager
+def running_mock(*args: str) -> Iterator[int]:
+    """Start ethercat-mock-slave (stdlib only, so this venv's Python runs it) on a free loopback port."""
+    assert MOCK_SCRIPT.is_file(), MOCK_SCRIPT
+    proc = subprocess.Popen(
+        [sys.executable, str(MOCK_SCRIPT), "--host", "127.0.0.1", "--port", "0", "--update-interval", "0.2", *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    lines: queue.Queue[str] = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(line) for line in proc.stderr], daemon=True).start()
+    try:
+        port = None
+        while port is None:
+            match = re.search(r"listening on 127\.0\.0\.1:(\d+)", lines.get(timeout=30))
+            if match:
+                port = int(match.group(1))
+        yield port
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def server_command() -> tuple[str, list[str]]:
+    """The installed console script if there is one, else ``python -m ethercat_mcp``."""
+    script = Path(sys.executable).with_name("ethercat-mcp")
+    if script.is_file():
+        return str(script), []
+    return sys.executable, ["-m", "ethercat_mcp"]

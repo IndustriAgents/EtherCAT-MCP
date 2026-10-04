@@ -8,18 +8,14 @@ can run it) on a free loopback port, then the server with
 from __future__ import annotations
 
 import json
-import queue
-import re
-import subprocess
-import sys
-import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import FIXTURES, MOCK_SCRIPT
+from conftest import FIXTURES, running_mock, server_command
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from test_tools import EXPECTED_TOOLS
@@ -27,38 +23,8 @@ from test_tools import EXPECTED_TOOLS
 
 @pytest.fixture(scope="module")
 def mock_port() -> Iterator[int]:
-    assert MOCK_SCRIPT.is_file(), MOCK_SCRIPT
-    proc = subprocess.Popen(
-        [sys.executable, str(MOCK_SCRIPT), "--host", "127.0.0.1", "--port", "0", "--update-interval", "0.2"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    lines: queue.Queue[str] = queue.Queue()
-    threading.Thread(target=lambda: [lines.put(line) for line in proc.stderr], daemon=True).start()
-    try:
-        port = None
-        while port is None:
-            line = lines.get(timeout=30)
-            match = re.search(r"listening on 127\.0\.0\.1:(\d+)", line)
-            if match:
-                port = int(match.group(1))
+    with running_mock() as port:
         yield port
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-
-
-def server_command() -> tuple[str, list[str]]:
-    script = Path(sys.executable).with_name("ethercat-mcp")
-    if script.is_file():
-        return str(script), []
-    return sys.executable, ["-m", "ethercat_mcp"]
 
 
 @asynccontextmanager
@@ -120,7 +86,7 @@ async def test_read_only_server_against_mock(tmp_path: Path, mock_port: int) -> 
     async with session(tmp_path, mock_port) as client:
         init = await client.initialize()
         assert init.serverInfo.name == "EtherCAT MCP Server"
-        assert init.serverInfo.version == "0.1.0"
+        assert init.serverInfo.version == version("ethercat-mcp")
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == EXPECTED_TOOLS
         assert all(t.description for t in tools)
@@ -155,7 +121,7 @@ async def test_read_only_server_against_mock(tmp_path: Path, mock_port: int) -> 
             await call(client, "write_sdo", slave_position=3, index="0x8000", subindex=6, value=1, data_type="BOOL"),
             "ETHERCAT_WRITES_ENABLED",
         )
-        failed(await call(client, "set_slave_state", slave_position=2, state="OP"), "ETHERCAT_STATE_CHANGE_ENABLED")
+        failed(await call(client, "set_slave_state", slave_position=2, state="OP"), "need both")
         failed(await call(client, "write_slave_by_alias", alias="outputs", data=[1]), "ETHERCAT_WRITES_ENABLED")
 
         listing = ok(await call(client, "list_slaves"))
@@ -210,7 +176,31 @@ async def test_writes_and_state_changes_against_mock(tmp_path: Path, mock_port: 
         assert ok(await call(client, "read_pdo", slave_position=1))["raw_data_hex"] == "00"
         failed(await call(client, "write_pdo", slave_position=2, offset=0, data=[1]), "only applied in OP")
 
+        # Re-entering OP must not re-apply 0x3C, which the mock (like SOEM) keeps in the output image.
+        for state in ("SAFEOP", "OP"):
+            ok(await call(client, "set_slave_state", slave_position=2, state=state))
+        assert ok(await call(client, "read_pdo", slave_position=1))["raw_data_hex"] == "00"
+        ok(await call(client, "set_slave_state", slave_position=2, state="PREOP"))
+
         ok(await call(client, "set_slave_state", slave_position=1, state="INIT"))
         ok(await call(client, "set_slave_state", slave_position=2, state="INIT"))
         rescan = ok(await call(client, "scan_network"))
         assert {s["state"] for s in rescan["slaves"]} == {"PREOP"}
+
+
+@pytest.mark.anyio
+async def test_live_segment_is_not_reset_by_a_read_only_scan(tmp_path: Path) -> None:
+    """A segment whose slaves are already in OP (another master) is only scanned with both gates on."""
+    with running_mock("--power-on-state", "OP") as port:
+        async with session(tmp_path, port) as client:
+            await client.initialize()
+            failed(await call(client, "scan_network"), "Refusing to scan: at least one slave on the segment")
+        async with session(tmp_path, port, ETHERCAT_STATE_CHANGE_ENABLED="true") as client:
+            await client.initialize()
+            failed(await call(client, "scan_network"), "Refusing to scan")
+        async with session(
+            tmp_path, port, ETHERCAT_WRITES_ENABLED="true", ETHERCAT_STATE_CHANGE_ENABLED="true"
+        ) as client:
+            await client.initialize()
+            slaves = ok(await call(client, "scan_network"))["slaves"]
+            assert {s["state"] for s in slaves} == {"PREOP"}

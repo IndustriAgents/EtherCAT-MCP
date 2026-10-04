@@ -97,7 +97,8 @@ def test_read_pdo_returns_the_process_image(backend: PysoemBackend) -> None:
     first, meta = backend.read_pdo(3, 0, None)
     second, _ = backend.read_pdo(3, 0, 4)
     assert len(first) == 4 and first != second  # the fake counts cycles into the EL3102 inputs
-    assert meta["wkc"] > 0 and meta["expected_wkc"] == 4
+    # Not every process-data slave is up (EL1008/EL2008 are in PREOP), so only wkc > 0 is enforced.
+    assert meta["wkc"] > 0 and meta["expected_wkc"] is None
     assert len(backend.read_pdo(3, 2, 2)[0]) == 2
     with pytest.raises(EthercatMasterError, match="has 4 input byte"):
         backend.read_pdo(3, 2, 3)
@@ -127,8 +128,9 @@ def test_write_pdo_checks_expected_wkc() -> None:
     try:
         be.scan()
         bring_up(be, 2)
-        with pytest.raises(EthercatMasterError, match="below ETHERCAT_EXPECTED_WKC=99"):
+        with pytest.raises(EthercatMasterError, match="below the expected 99") as info:
             be.write_pdo(2, 0, b"\x01")
+        assert info.value.outcome == "unknown"
     finally:
         be.close()
 

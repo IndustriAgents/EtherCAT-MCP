@@ -73,8 +73,6 @@ def parse_int(value: Any, what: str, minimum: int | None = None, maximum: int | 
         raise ValueError(f"{what} must be an integer, not a boolean")
     if isinstance(value, int):
         number = value
-    elif isinstance(value, float) and value.is_integer():
-        number = int(value)
     elif isinstance(value, str):
         text = value.strip()
         if text.lower().startswith("#x"):  # ETG ESI notation
@@ -104,10 +102,12 @@ def normalize_data_type(data_type: str | None) -> str | None:
     return name
 
 
-def parse_bytes(data: Any, what: str = "data") -> bytes:
+def parse_bytes(data: Any, what: str = "data", max_length: int | None = None) -> bytes:
     """Turn a list of ints (0..255) into bytes, rejecting anything else."""
     if not isinstance(data, list | tuple) or not data:
         raise ValueError(f"{what} must be a non-empty list of byte values (0-255)")
+    if max_length is not None and len(data) > max_length:
+        raise ValueError(f"{what} has {len(data)} bytes; at most {max_length} are allowed")
     out = bytearray()
     for i, item in enumerate(data):
         byte = parse_int(item, f"{what}[{i}]")

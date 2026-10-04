@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +70,7 @@ async def test_every_tool_is_listed_with_a_description(server: EthercatMCPServer
 
 
 def test_server_version_is_the_package_version(server: EthercatMCPServer) -> None:
-    assert server.mcp._mcp_server.version == __version__ == "0.1.0"
+    assert server.mcp._mcp_server.version == __version__ == version("ethercat-mcp")
 
 
 @pytest.mark.anyio
@@ -92,6 +93,7 @@ async def test_ping_reports_backend_and_read_only_defaults(tmp_path: Path) -> No
         ("write_sdo", {"slave_position": 0, "index": "0x8000", "subindex": 6, "value": 1}, "ETHERCAT_WRITES_ENABLED"),
         ("write_slave_by_alias", {"alias": "x", "data": [1]}, "ETHERCAT_WRITES_ENABLED"),
         ("set_slave_state", {"slave_position": 0, "state": "OP"}, "ETHERCAT_STATE_CHANGE_ENABLED"),
+        ("set_slave_state", {"slave_position": 0, "state": "OP"}, "ETHERCAT_WRITES_ENABLED"),
     ],
 )
 async def test_writes_and_state_changes_are_off_by_default(
@@ -101,6 +103,69 @@ async def test_writes_and_state_changes_are_off_by_default(
     assert result["success"] is False
     assert message in result["error"]
     assert result["meta"]["backend"] == "pysoem"
+    assert result["meta"]["outcome"] == "not_sent" and result["meta"]["request_sent"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("gate", ["ETHERCAT_STATE_CHANGE_ENABLED", "ETHERCAT_WRITES_ENABLED"])
+async def test_state_changes_need_both_gates(tmp_path: Path, gate: str) -> None:
+    """Suite rule 2: a separate state gate never replaces the write gate."""
+    srv, fake = build(tmp_path, **{gate: "true"})
+    try:
+        result = await call(srv, "set_slave_state", slave_position=0, state="PREOP")
+        assert result["success"] is False
+        assert "need both ETHERCAT_WRITES_ENABLED=true and ETHERCAT_STATE_CHANGE_ENABLED=true" in result["error"]
+        assert fake.masters == []
+    finally:
+        srv.master.backend.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "arguments", "field"),
+    [
+        ("get_slave_info", {"slave_position": True}, "slave_position"),
+        ("read_pdo", {"slave_position": 3, "offset": False}, "offset"),
+        ("read_sdo", {"slave_position": 3, "index": True}, "index"),
+        ("read_sdo", {"slave_position": 3, "index": 4120.0}, "index"),
+        ("write_pdo", {"slave_position": 2, "offset": 0, "data": [True]}, "data.0"),
+        ("write_sdo", {"slave_position": 3, "index": "0x8000", "subindex": True, "value": 1}, "subindex"),
+    ],
+)
+async def test_booleans_and_floats_are_not_integers(
+    tmp_path: Path, tool: str, arguments: dict[str, Any], field: str
+) -> None:
+    """Suite rule 7: strict integers for positions, indexes and byte values."""
+    srv, fake = build(tmp_path, ETHERCAT_WRITES_ENABLED="true")
+    try:
+        result = await call(srv, tool, **arguments)
+        assert result["success"] is False, result
+        assert result["error"].startswith(f"Invalid arguments for {tool}: {field}"), result["error"]
+        assert fake.masters == []  # rejected before anything touched the bus
+    finally:
+        srv.master.backend.close()
+
+
+@pytest.mark.anyio
+async def test_write_outcomes_are_reported(tmp_path: Path) -> None:
+    srv, fake = build(tmp_path, ETHERCAT_WRITES_ENABLED="true", ETHERCAT_STATE_CHANGE_ENABLED="true")
+    fake.bus.devices[3].spec.sdo_reply_lost = True
+    try:
+        await call(srv, "scan_network")
+        lost = await call(srv, "write_sdo", slave_position=3, index="0x8000", subindex=6, value=1, data_type="UINT8")
+        assert lost["success"] is False
+        assert lost["meta"]["outcome"] == "unknown" and lost["meta"]["request_sent"] is True
+        assert "may have been applied; check/read back before retrying" in lost["error"]
+        aborted = await call(srv, "write_sdo", slave_position=3, index="0x2000", subindex=0, value=1, data_type="UINT8")
+        assert aborted["meta"]["outcome"] == "rejected"
+        refused = await call(srv, "set_slave_state", slave_position=1, state="OP")
+        assert refused["meta"]["outcome"] == "rejected"
+        moved = await call(srv, "set_slave_state", slave_position=2, state="SAFEOP")
+        assert moved["success"] and moved["meta"]["outcome"] == "written" and moved["meta"]["request_sent"]
+        too_big = await call(srv, "write_pdo", slave_position=2, offset=0, data=[0] * 4097)
+        assert "at most 4096" in too_big["error"] and too_big["meta"]["outcome"] == "not_sent"
+    finally:
+        srv.master.backend.close()
 
 
 @pytest.mark.anyio
