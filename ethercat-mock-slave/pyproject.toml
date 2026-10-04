@@ -4,11 +4,16 @@ version = "0.1.0"
 description = "Mock EtherCAT slave for MCP integration testing."
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "IndustriAgents" }]
 dependencies = [
     "anyio>=4.0.0",
     "rich>=13.7.0",
     "python-dotenv>=1.1.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/IndustriAgents/EtherCAT-MCP"
 
 [project.scripts]
 ethercat-mock-slave = "ethercat_mock_slave:main"

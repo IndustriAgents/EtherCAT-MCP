@@ -15,10 +15,11 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 fi
 
-echo "Starting container '${CONTAINER_NAME}' on host port ${HOST_PORT} -> container 6700..."
+# Publish on loopback only: the mock accepts write_pdo from anyone who can reach it.
+echo "Starting container '${CONTAINER_NAME}' on 127.0.0.1:${HOST_PORT} -> container 6700..."
 docker run --rm \
   --name "${CONTAINER_NAME}" \
-  -p "${HOST_PORT}:6700" \
+  -p "127.0.0.1:${HOST_PORT}:6700" \
   -e MOCK_ETHERCAT_HOST=0.0.0.0 \
   "${IMAGE_NAME}"
 

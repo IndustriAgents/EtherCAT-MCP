@@ -5,7 +5,7 @@ description = "Model Context Protocol server for EtherCAT (PySOEM + MCP tooling)
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "IndustriConnect" }]
+authors = [{ name = "IndustriAgents" }]
 dependencies = [
     "anyio>=4.0.0",
     "mcp[cli]>=1.6.0",
@@ -14,6 +14,9 @@ dependencies = [
     "pysoem>=1.1.4",
     "lxml>=4.9.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/IndustriAgents/EtherCAT-MCP"
 
 [project.optional-dependencies]
 dev = [
