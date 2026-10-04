@@ -63,9 +63,12 @@ A change that breaks one of these needs a reason in the pull request:
    [Safety model](README.md#safety-model)); everything else after the send is
    `unknown` with `meta.request_sent: true`, and tells the caller to read back
    before retrying.
-5. **Deadlines.** Every device call runs under an overall deadline
-   (`EthercatMaster._run`): on expiry a read is an error, a write is
-   `unknown`. Nothing may hang.
+5. **Deadlines and cancellation.** Every device call runs under an overall
+   deadline with a `CallToken` (`EthercatMaster._run`). Backends acquire their
+   lock through `locked()` and call `token.begin_send()` immediately before
+   anything that can change a device, so a call that was cancelled (deadline,
+   client cancel, client disconnect) before its send point ends `not_sent` and
+   never sends later. Nothing may hang.
 6. **Strict arguments.** Positions, offsets, indexes and byte values are strict
    integers (`pydantic.StrictInt`): a boolean is never a number.
 7. **A mock for the protocol.** If you add a tool, make it work against

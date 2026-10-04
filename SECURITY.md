@@ -80,11 +80,19 @@ application on the office network.
   returns only parsed ESI fields. A file that declares a DOCTYPE or ENTITY is
   refused before parsing (libxml2 expands internal entities in attribute values
   even with entity resolution off, so a 100 KB file could cost seconds and
-  hundreds of MB), as is a file larger than `ETHERCAT_ESI_MAX_MB`. Parsing runs
-  off the MCP event loop with a deadline.
-- **Every device call has a deadline.** A device or mock call that does not
-  finish within its overall deadline ends the tool call: a read with an error,
-  a write with `meta.outcome: "unknown"`.
+  hundreds of MB). So is a file whose declared encoding is not UTF-8, UTF-16,
+  UTF-32, ISO-8859-1 or US-ASCII (in UTF-7 or EBCDIC the declarations could hide
+  from that check), and a file larger than `ETHERCAT_ESI_MAX_MB` (at most
+  16 MiB). The server decides the encoding itself (byte-order mark or the whole
+  XML declaration), decodes the file in Python and hands libxml2 only the
+  decoded text, so libxml2 cannot pick another encoding. lxml holds the Python
+  GIL while it parses, so a large file can still delay other calls while it is
+  being parsed; the size cap keeps that short.
+- **Every device call has a deadline, and cancelling stops it.** A device or
+  mock call that does not finish within its overall deadline ends the tool
+  call: a read with an error, a write with `meta.outcome: "unknown"` if it had
+  gone out, or `not_sent` if it had not. A write the client cancels, or that is
+  still queued when the client disconnects, is never sent afterwards.
 - **Never point it at a safety system.** Functional-safety traffic (for
   example Safety over EtherCAT / FSoE) is out of scope for this project.
 

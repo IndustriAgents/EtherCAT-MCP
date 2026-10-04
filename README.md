@@ -227,7 +227,7 @@ a file passed with `--env-file`, or (except the safety settings) in
 | `ETHERCAT_MOCK_PORT` | `6700` | Mock slave port (`mock` backend) |
 | `SLAVE_MAP_FILE` | unset | JSON file of slave aliases (see below) |
 | `ETHERCAT_ESI_PATH` | unset | Directory searched for ESI files passed to `load_esi_file` by name |
-| `ETHERCAT_ESI_MAX_MB` | `16` | Largest ESI file `load_esi_file` parses (1 to 512) |
+| `ETHERCAT_ESI_MAX_MB` | `16` | Largest ESI file `load_esi_file` parses (1 to 16) |
 
 Booleans accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`. A value
 that cannot be used (for example `ETHERCAT_WRITES_ENABLED=maybe`) stops the
@@ -309,7 +309,8 @@ strings such as `"0x10"`:
   and `meta.request_sent`:
   - `written`: the bus or the slave confirmed it;
   - `not_sent`: refused or failed before anything left the master (gates,
-    invalid arguments, closed interface);
+    invalid arguments, a closed interface, or a call that was cancelled or ran
+    out of time before its send point: such a call is never sent later);
   - `rejected`: only for refusals that by the protocol come before anything is
     applied: an SDO abort for an expedited download (at most 4 bytes) that
     names this slave, index and subindex, or an AL status code that refuses a
@@ -317,14 +318,23 @@ strings such as `"0x10"`:
   - `unknown` for everything else after the send: lost or late answers, an
     abort of a longer (possibly segmented) download, an error that SOEM's
     shared error ring may hold for another request, a mailbox or packet
-    error, a slave that reached the state and then faulted, or a failure while
-    confirming. The error then says the request may have been applied: read
+    error, a slave that reached the state and then faulted, a failure while
+    mapping the process image (it writes sync-manager and FMMU registers), or a
+    failure while confirming. The error then says the request may have been applied: read
     back before retrying. Outputs that `write_pdo` placed in the process image
     stay there and keep going out every cycle.
-- **Deadlines.** Every device call has an overall deadline
-  (4 × `ETHERCAT_TIMEOUT` + 10 s; longer for a scan and for the first
-  SAFEOP/OP request, which maps the image). On expiry a read fails cleanly and a
-  write is `unknown`. Shutdown is bounded the same way.
+- **Deadlines and cancellation.** Every device call has an overall deadline:
+  4 × `ETHERCAT_TIMEOUT` + 10 s (12 s by default), plus 30 s for a scan and
+  20 s for the first SAFEOP/OP request, which maps the image (so at most 42 s
+  by default, below the usual 60 s client timeout). Each call carries a
+  cancel token that the backend checks after waiting for the bus and
+  immediately before every send. When the deadline passes, the client cancels
+  the call (`notifications/cancelled`), or the client disconnects (stdin
+  closes), the token is cancelled first: a call that had not reached its send
+  point ends `not_sent` and is never sent afterwards, even if it was queued
+  behind another call; one that had is `unknown`. A read ends with an error.
+  On disconnect, new calls are refused, and the master is still closed (INIT
+  requested if process data ran). Shutdown is bounded the same way.
 - **Watchdog.** When the image is mapped, the process-data watchdog of every
   slave with outputs is set to `ETHERCAT_PD_WATCHDOG_MS` (PySOEM's
   `set_watchdog`, which PySOEM marks experimental). A slave that refuses keeps
@@ -358,7 +368,7 @@ strings such as `"0x10"`:
 | `set_slave_state` | Gated by `ETHERCAT_WRITES_ENABLED` and `ETHERCAT_STATE_CHANGE_ENABLED`. Requests `INIT`, `PREOP`, `SAFEOP` or `OP` for one slave (acknowledging a pending AL error, zeroing its outputs around OP) and waits until it is reached; reports the AL status code if not. |
 | `list_slaves` | Aliases from `SLAVE_MAP_FILE`, with an error per unusable entry. |
 | `read_slave_by_alias` / `write_slave_by_alias` | Resolve an alias to position, offset and length, then do what `read_pdo` / `write_pdo` do (same rules, same write gate). |
-| `load_esi_file` | Parses an ESI XML file: vendor, devices, and for one selected device (`device_type`, `revision`) its object dictionary and Tx/Rx PDO mappings. No bus access. Files that declare a DOCTYPE or ENTITY, or exceed `ETHERCAT_ESI_MAX_MB`, are refused. |
+| `load_esi_file` | Parses an ESI XML file: vendor, devices, and for one selected device (`device_type`, `revision`) its object dictionary and Tx/Rx PDO mappings. No bus access. Files that declare a DOCTYPE or ENTITY, use an encoding other than UTF-8, UTF-16, UTF-32, ISO-8859-1 or US-ASCII, or exceed `ETHERCAT_ESI_MAX_MB` are refused. |
 
 Index arguments take hex with a `0x` prefix (`"0x1018"`), ESI-style `#x1018`,
 or decimal (`"4120"`). Positions, offsets, indexes and byte values are strict
