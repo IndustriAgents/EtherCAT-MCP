@@ -119,6 +119,8 @@ class SlaveSpec:
     watchdog_fails: bool = False
     sdo_write_error: Exception | None = None  # raised by sdo_write after applying (e.g. a stray ring error)
     fault_in_op: int | None = None  # AL status code: the device reaches OP, then falls to SAFEOP+ERROR
+    fault_on_enter: dict = field(default_factory=dict)  # state -> AL code: reaches it, then shows the error flag
+    state_check_raises: Exception | None = None  # raised by state_check (e.g. the link drops while polling)
     ignore_requests: bool = False  # the device does not react to AL control writes (no answer in time)
 
 
@@ -178,6 +180,9 @@ class FakeDevice:
             self.applied_outputs = bytes(self.spec.obytes)  # outputs drop to their safe state
         self.actual = target
         self.al_status = 0
+        if target in self.spec.fault_on_enter:
+            self.actual = target | STATE_ERROR
+            self.al_status = self.spec.fault_on_enter[target]
         if target == OP_STATE:
             self.applied_outputs = self.sm_outputs  # applied at once, before the next frame
             self.op_entries.append(self.sm_outputs)
@@ -201,6 +206,7 @@ class FakeBus:
         self.fail_receive: Exception | None = None
         self.drop_after_write: int | None = None  # device that falls to SAFEOP+ERROR once its outputs change
         self.lose_broadcasts = 0  # the next N broadcast AL-state reads are lost (read as 0)
+        self.config_init_raises: Exception | None = None
         self.cycles = 0
 
 
@@ -255,6 +261,8 @@ class FakeSlave:
     def state_check(self, expected_state, timeout=2000):
         self._master._check()
         self._master._bus.calls.append(("slave.state_check", self._pos, expected_state, timeout))
+        if self._dev.spec.state_check_raises is not None:
+            raise self._dev.spec.state_check_raises
         self.state = self._dev.actual
         return self._dev.actual & 0x0F
 
@@ -337,6 +345,10 @@ class FakeMaster:
     def config_init(self, usetable=False, *, release_gil=None):
         self._check()
         self._bus.calls.append(("config_init", self.manual_state_change, release_gil))
+        if self._bus.config_init_raises is not None:
+            for dev in self._bus.devices:
+                dev.actual = INIT_STATE  # the reset went out before the failure
+            raise self._bus.config_init_raises
         self._bus.mapped = False
         self.slaves = []
         for dev in self._bus.devices:

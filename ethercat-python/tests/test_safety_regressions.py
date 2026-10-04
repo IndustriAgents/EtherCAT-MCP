@@ -477,3 +477,78 @@ def test_shared_bytes_weaken_the_working_counter_check_and_say_so() -> None:
         assert meta["wkc"] == 3 and "can go unnoticed" in meta["wkc_note"]
     finally:
         be.close()
+
+
+# -- review round 3: rule 1a safeguards that survived mutation -------------------------
+
+
+def test_a_slave_that_moved_and_then_shows_a_refusal_code_is_unknown() -> None:
+    fake = FakePysoem()
+    fake.bus.devices[EL1008].spec.fault_on_enter = {SAFEOP_STATE: 0x0011}
+    be, _ = make(fake)
+    try:
+        be.scan()
+        with pytest.raises(EthercatMasterError, match="SAFEOP\\+ERROR") as info:
+            be.set_state(EL1008, SAFEOP_STATE)  # it left PREOP, so this is not a pre-execution refusal
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
+
+
+def test_a_repeated_refusal_code_from_before_is_not_a_refusal() -> None:
+    be, fake = make()
+    try:
+        be.scan()
+        be.set_state(EL2008, SAFEOP_STATE)
+        device = fake.device(EL2008)
+        device.actual = SAFEOP_STATE | 0x10  # SAFEOP+ERROR with 0x0011 left from an earlier request
+        device.al_status = 0x0011
+        device.spec.ignore_requests = True
+        with pytest.raises(EthercatMasterError, match="did not reach OP") as info:
+            be.set_state(EL2008, OP_STATE)
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
+
+
+def test_a_failure_while_polling_after_the_request_is_unknown() -> None:
+    fake = FakePysoem()
+    fake.bus.devices[EL1008].spec.state_check_raises = OSError("link down")
+    be, _ = make(fake)
+    try:
+        be.scan()
+        with pytest.raises(EthercatMasterError, match="link down") as info:
+            be.set_state(EL1008, INIT_STATE)
+        assert info.value.outcome == "unknown"
+        assert ("slave.write_state", EL1008, INIT_STATE) in fake.bus.calls  # it did go out
+    finally:
+        be.close()
+
+
+def test_a_config_init_failure_is_unknown() -> None:
+    fake = FakePysoem()
+    fake.bus.config_init_raises = OSError("frame lost")
+    be, _ = make(fake)
+    try:
+        with pytest.raises(EthercatMasterError, match="Bus scan failed") as info:
+            be.scan()
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
+
+
+def test_a_mapping_failure_is_unknown() -> None:
+    """config_map writes sync-manager and FMMU registers as it goes."""
+    be, fake = make()
+    try:
+        be.scan()
+
+        def failing_map():
+            raise RuntimeError("mailbox error during PDO assignment")
+
+        fake.masters[0].config_map = failing_map
+        with pytest.raises(EthercatMasterError, match="Mapping the process image failed") as info:
+            be.set_state(EL2008, SAFEOP_STATE)
+        assert info.value.outcome == "unknown"
+    finally:
+        be.close()
