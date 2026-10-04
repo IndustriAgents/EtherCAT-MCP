@@ -258,8 +258,11 @@ strings such as `"0x10"`:
   time `set_slave_state` asks for SAFEOP or OP. From then on a background thread
   exchanges process data every `ETHERCAT_CYCLE_TIME`. Inputs are valid in SAFEOP
   and OP; outputs are applied only in OP, so `write_pdo` refuses any other state.
-- **Shutdown.** When the server exits after process data was running, it stops
-  the exchange and requests INIT for all slaves before closing the interface.
+- **Shutdown.** When the server exits after process data was running (stdin
+  closed, or SIGTERM, SIGINT or SIGHUP, which is how MCP clients stop servers),
+  it stops the exchange and requests INIT for all slaves before closing the
+  interface. A SIGKILL skips this; the slaves' sync-manager watchdogs then drop
+  the outputs to their safe state.
 - **The mock is labelled.** With `ETHERCAT_BACKEND=mock`, every envelope carries
   `meta.backend: "mock"` and `meta.simulated: true`, and the server logs a
   warning on startup.
@@ -275,11 +278,11 @@ strings such as `"0x10"`:
 | `scan_network` | Enumerates the bus (`config_init`, see [Safety model](#safety-model)). Returns position, name, vendor ID, product code, revision, AL state and process-data sizes per slave. The sizes are `null` on a real bus until the process image is mapped. |
 | `get_slave_info` | One slave from the last scan, with its AL state read fresh. Needs a prior scan. |
 | `test_slave_communication` | Reads the slave's AL state, then tries a CoE read of object 0x1000. `success: false` if the slave does not answer. |
-| `read_pdo` | Input bytes of one slave from the process image (`offset`, `length`). Needs SAFEOP or OP. |
-| `write_pdo` | Gated by `ETHERCAT_WRITES_ENABLED`. Writes output bytes into the process image and waits until they went out and the frame was answered. Needs OP. |
+| `read_pdo` | Input bytes of one slave from the process image (`offset`, `length`). Needs SAFEOP or OP. For a bit-packed slave, only its own bits (see [Known limitations](#known-limitations)). |
+| `write_pdo` | Gated by `ETHERCAT_WRITES_ENABLED`. Writes output bytes into the process image and waits until they went out in the cyclic frame and the frame came back with a working counter above 0 (or at least `ETHERCAT_EXPECTED_WKC`). Needs OP. Refused for bit-packed slaves. |
 | `read_sdo` | CoE upload (`index`, `subindex`, optional `data_type` such as `UINT32`, `STRING`). Returns the raw bytes and the decoded value. Needs a mailbox and PREOP or higher. |
 | `write_sdo` | Gated by `ETHERCAT_WRITES_ENABLED`. CoE download of `value` encoded as `data_type`. SDO aborts come back with their abort code. |
-| `set_slave_state` | Gated by `ETHERCAT_STATE_CHANGE_ENABLED`. Requests `INIT`, `PREOP`, `SAFEOP` or `OP` for one slave and waits until it is reached; reports the AL status code if not. |
+| `set_slave_state` | Gated by `ETHERCAT_STATE_CHANGE_ENABLED`. Requests `INIT`, `PREOP`, `SAFEOP` or `OP` for one slave (acknowledging a pending AL error) and waits until it is reached; reports the AL status code if not. |
 | `list_slaves` | Aliases from `SLAVE_MAP_FILE`, with an error per unusable entry. |
 | `read_slave_by_alias` / `write_slave_by_alias` | Resolve an alias to position, offset and length, then do what `read_pdo` / `write_pdo` do (same rules, same write gate). |
 | `load_esi_file` | Parses an ESI XML file: vendor, devices, and for one selected device (`device_type`, `revision`) its object dictionary and Tx/Rx PDO mappings. No bus access. |
@@ -318,8 +321,19 @@ transport (`ETHERCAT_BACKEND=mock`) instead of a network interface.
   and are tested against a fake `pysoem`, not against real slaves.
 - **Minimal master.** No distributed clocks, no PDO remapping (slaves keep the
   mapping SOEM reads from CoE or SII), no FoE/EoE, no cable redundancy, and no
-  automatic recovery of lost slaves. Working counters are checked per group, not
-  per slave.
+  automatic recovery of lost slaves.
+- **Working counters are per frame.** The working counter that confirms a
+  `write_pdo` covers every slave in the frame, so it does not prove that this one
+  slave took the outputs. Set `ETHERCAT_EXPECTED_WKC` to the full count (shown by
+  `get_master_status` once all slaves are in OP) for a stricter check.
+- **Bit-packed slaves.** SOEM packs slaves with fewer than 8 bits of process
+  data (for example 2- or 4-channel digital terminals) into bytes shared with
+  their neighbours, and PySOEM's process-image view does not say which bits are
+  whose. The server reads each slave's FMMU registers (through PySOEM's private
+  `_fprd`) to find out: `read_pdo` then returns only that slave's bits, shifted
+  to bit 0 (`meta.bit_packed`), and `write_pdo` refuses, because a whole-byte
+  write would change the neighbours' outputs. If the registers cannot be read,
+  both refuse.
 - **Timing.** The cyclic exchange runs in a Python thread. Expect jitter;
   this is not a real-time master.
 - **Raw bytes.** `read_pdo` returns the slave's input bytes. Turning them into

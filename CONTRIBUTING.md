@@ -47,9 +47,10 @@ A change that breaks one of these needs a reason in the pull request:
    `ETHERCAT_STATE_CHANGE_ENABLED`. Both default to `false`. A new tool that
    can change equipment must use the same gates.
 3. **Never report what did not happen.** A tool returns `success: true` only if
-   the bus (or the mock) confirmed the operation, and never returns made-up
-   device data. If something is not implemented, say so with
-   `success: false`.
+   the bus (or the mock) confirmed the operation as far as EtherCAT lets a
+   master tell (for process data, that is the frame's working counter), and
+   never returns made-up device data. If something is not implemented, say so
+   with `success: false`.
 4. **A mock for the protocol.** If you add a tool, make it work against
    `ethercat-mock-slave` through the mock transport (`ETHERCAT_BACKEND=mock`)
    and add it to the end-to-end test.
