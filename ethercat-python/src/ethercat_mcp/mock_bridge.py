@@ -26,8 +26,11 @@ from .ec_master import (
     OP_STATE,
     REJECTED,
     WRITTEN,
+    CallToken,
     EthercatMasterError,
+    _token,
     check_slice,
+    locked,
     refuse_live_segment,
     refuse_rescan,
     state_name,
@@ -52,13 +55,28 @@ class MockBridgeBackend:
     def endpoint(self) -> str:
         return f"{self.config.mock_host}:{self.config.mock_port}"
 
-    def _request(self, payload: dict[str, Any], *, write: bool = False) -> Any:
+    def _request(
+        self,
+        payload: dict[str, Any],
+        *,
+        write: bool = False,
+        token: CallToken | None = None,
+        send_point: bool = True,
+    ) -> Any:
         """One request, one connection, no retries.
 
         For a device-changing request (``write``), a failure after the request
         went out is an "unknown" outcome and an error reply is "rejected".
+        ``token`` is checked once connected, immediately before the request goes
+        out: a cancelled call never sends. ``send_point=False`` marks a write that
+        does not count as sending the call's command (clearing the output image of
+        a slave that is not in OP).
         """
+        token = _token(token)
         timeout = self.config.timeout_us / 1_000_000
+        remaining = token.remaining()
+        if remaining is not None:
+            timeout = max(0.001, min(timeout, remaining))
         what = payload.get("op")
         try:
             request = json.dumps(payload).encode("utf-8") + b"\n"  # built before anything is sent
@@ -73,6 +91,10 @@ class MockBridgeBackend:
         deadline = time.monotonic() + timeout
         try:
             with sock:
+                if write and send_point:
+                    token.begin_send()  # the last moment to decide: after this, it may arrive
+                else:
+                    token.check()
                 sock.sendall(request)
                 buf = bytearray()
                 while not buf.endswith(b"\n"):
@@ -90,6 +112,8 @@ class MockBridgeBackend:
             reply = json.loads(buf)
             if not isinstance(reply, dict) or not isinstance(reply.get("success"), bool):
                 raise ValueError("unexpected reply")
+        except EthercatMasterError:
+            raise  # the token stopped the call before sendall
         except Exception as exc:  # anything after the request may have gone out
             message = f"Mock slave at {self.endpoint} gave no usable reply to {what}: {type(exc).__name__}: {exc}"
             if write:
@@ -150,8 +174,8 @@ class MockBridgeBackend:
             "al_status": raw.get("al_status", ""),
         }
 
-    def _read_states(self) -> list[dict[str, Any]]:
-        data = self._request({"op": "read_state"})
+    def _read_states(self, token: CallToken | None = None) -> list[dict[str, Any]]:
+        data = self._request({"op": "read_state"}, token=token)
         try:
             states = [self._state(item) for item in data]
         except (KeyError, TypeError, ValueError):
@@ -162,10 +186,10 @@ class MockBridgeBackend:
                 self._slaves[pos].update(state)
         return states
 
-    def _clear_outputs(self, position: int) -> None:
+    def _clear_outputs(self, position: int, token: CallToken | None = None) -> None:
         """Zero this slave's part of the output image (the mock keeps it, like SOEM's io_map)."""
         if self._slaves[position].get("output_size"):
-            self._request({"op": "clear_outputs", "position": position}, write=True)
+            self._request({"op": "clear_outputs", "position": position}, write=True, token=token, send_point=False)
 
     # -- Backend API ----------------------------------------------------------
 
@@ -176,9 +200,10 @@ class MockBridgeBackend:
     def describe(self) -> dict[str, Any]:
         return {"backend": self.name, "simulated": True, "mock_endpoint": self.endpoint}
 
-    def scan(self) -> list[dict[str, Any]]:
-        with self._lock:
-            states = self._read_states()
+    def scan(self, token: CallToken | None = None) -> list[dict[str, Any]]:
+        token = _token(token)
+        with locked(self._lock, token):
+            states = self._read_states(token)
             if self._scanned:
                 refuse_rescan(states)
             bits = 0
@@ -190,7 +215,7 @@ class MockBridgeBackend:
                 "segment_state_before": state_name(bits) if bits else "NONE (no answer)",
                 "reset_live_segment": bool(bits & 0x0C),
             }
-            data = self._request({"op": "scan"}, write=True)
+            data = self._request({"op": "scan"}, write=True, token=token)
             try:
                 if not isinstance(data, list):
                     raise TypeError("not a list")
@@ -200,34 +225,41 @@ class MockBridgeBackend:
             self._scanned = True
             # Like zeroing the image after config_map: start from zero, whatever an earlier run left.
             for position in range(len(self._slaves)):
-                self._clear_outputs(position)
+                self._clear_outputs(position, token)
             return [dict(slave) for slave in self._slaves]
 
     def slave_count(self) -> int:
         return len(self._slaves)
 
-    def slave_entry(self, position: int) -> dict[str, Any]:
-        with self._lock:
+    def slave_entry(self, position: int, token: CallToken | None = None) -> dict[str, Any]:
+        with locked(self._lock, _token(token)):
             self._require_position(position)
             return dict(self._slaves[position])
 
-    def read_states(self) -> list[dict[str, Any]]:
-        with self._lock:
+    def read_states(self, token: CallToken | None = None) -> list[dict[str, Any]]:
+        token = _token(token)
+        with locked(self._lock, token):
             self._require_scanned()
-            return self._read_states()
+            return self._read_states(token)
 
-    def read_pdo(self, position: int, offset: int, length: int | None) -> tuple[bytes, dict[str, Any]]:
-        with self._lock:
+    def read_pdo(
+        self, position: int, offset: int, length: int | None, token: CallToken | None = None
+    ) -> tuple[bytes, dict[str, Any]]:
+        token = _token(token)
+        with locked(self._lock, token):
             self._require_position(position)
-            data = self._request({"op": "read_pdo", "position": position, "offset": 0})
+            data = self._request({"op": "read_pdo", "position": position, "offset": 0}, token=token)
         image = self._hex_field(data, "raw_data_hex")
         return check_slice(image, offset, length, "input", position), {"state": data.get("state")}
 
-    def write_pdo(self, position: int, offset: int, data: bytes) -> dict[str, Any]:
-        with self._lock:
+    def write_pdo(self, position: int, offset: int, data: bytes, token: CallToken | None = None) -> dict[str, Any]:
+        token = _token(token)
+        with locked(self._lock, token):
             self._require_position(position)
             reply = self._request(
-                {"op": "write_pdo", "position": position, "offset": offset, "data": list(data)}, write=True
+                {"op": "write_pdo", "position": position, "offset": offset, "data": list(data)},
+                write=True,
+                token=token,
             )
         return {
             "state": reply.get("state"),
@@ -236,32 +268,40 @@ class MockBridgeBackend:
             "outcome": WRITTEN,
         }
 
-    def read_sdo(self, position: int, index: int, subindex: int) -> bytes:
-        with self._lock:
+    def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes:
+        token = _token(token)
+        with locked(self._lock, token):
             self._require_position(position)
-            data = self._request({"op": "read_sdo", "position": position, "index": index, "subindex": subindex})
+            data = self._request(
+                {"op": "read_sdo", "position": position, "index": index, "subindex": subindex}, token=token
+            )
         return self._hex_field(data, "data_hex")
 
-    def write_sdo(self, position: int, index: int, subindex: int, data: bytes) -> None:
-        with self._lock:
+    def write_sdo(self, position: int, index: int, subindex: int, data: bytes, token: CallToken | None = None) -> None:
+        token = _token(token)
+        with locked(self._lock, token):
             self._require_position(position)
             self._request(
                 {"op": "write_sdo", "position": position, "index": index, "subindex": subindex, "data_hex": data.hex()},
                 write=True,
+                token=token,
             )
 
-    def set_state(self, position: int, state: int) -> dict[str, Any]:
-        with self._lock:
+    def set_state(self, position: int, state: int, token: CallToken | None = None) -> dict[str, Any]:
+        token = _token(token)
+        with locked(self._lock, token):
             self._require_position(position)
-            current = self._read_states()[position]["state_code"]
+            current = self._read_states(token)[position]["state_code"]
             if state == OP_STATE and current != OP_STATE:
-                self._clear_outputs(position)  # enter OP with zero outputs, never stale ones
+                self._clear_outputs(position, token)  # enter OP with zero outputs, never stale ones
             try:
-                data = self._request({"op": "set_state", "position": position, "state_code": state}, write=True)
+                data = self._request(
+                    {"op": "set_state", "position": position, "state_code": state}, write=True, token=token
+                )
             finally:
                 try:
-                    if self._read_states()[position]["state_code"] != OP_STATE:
-                        self._clear_outputs(position)  # outside OP: never leave stale outputs for later
+                    if self._read_states(token)[position]["state_code"] != OP_STATE:
+                        self._clear_outputs(position, token)  # outside OP: never leave stale outputs for later
                 except EthercatMasterError:
                     pass  # best effort; the request's own outcome is what gets reported
             try:

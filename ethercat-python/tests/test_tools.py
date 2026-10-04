@@ -312,7 +312,8 @@ async def test_scan_reports_its_outcome_and_what_it_reset(tmp_path: Path) -> Non
 
 @pytest.mark.anyio
 async def test_every_device_call_has_an_overall_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Suite rule 12: a hung device call ends; a write is unknown, a read a clean error."""
+    """Suite rule 12: a hung device call ends. A write that went out is unknown, one that never
+    got to send is not_sent, and a read is a clean error."""
     import time as time_module
 
     from ethercat_mcp.config import EthercatConfig
@@ -322,15 +323,27 @@ async def test_every_device_call_has_an_overall_deadline(tmp_path: Path, monkeyp
     backend = srv.master.backend
     try:
         await call(srv, "scan_network")
-        monkeypatch.setattr(backend, "write_sdo", lambda *args: time_module.sleep(3))
-        monkeypatch.setattr(backend, "read_sdo", lambda *args: time_module.sleep(3))
+
+        def hung_send(*args, token):
+            token.begin_send()
+            time_module.sleep(3)
+
+        def hung_before_send(*args, token):
+            time_module.sleep(3)
+
         start = time_module.monotonic()
+        monkeypatch.setattr(backend, "write_sdo", hung_send)
         wrote = await call(srv, "write_sdo", slave_position=3, index="0x8000", subindex=6, value=1, data_type="UINT8")
         assert wrote["success"] is False and wrote["meta"]["outcome"] == "unknown"
         assert wrote["meta"]["request_sent"] is True and "did not finish within" in wrote["error"]
+        monkeypatch.setattr(backend, "write_sdo", hung_before_send)
+        queued = await call(srv, "write_sdo", slave_position=3, index="0x8000", subindex=6, value=1, data_type="UINT8")
+        assert queued["meta"]["outcome"] == "not_sent" and queued["meta"]["request_sent"] is False
+        assert "will not be sent later" in queued["error"]
+        monkeypatch.setattr(backend, "read_sdo", hung_before_send)
         read = await call(srv, "read_sdo", slave_position=3, index="0x1000")
         assert read["success"] is False and "did not finish within" in read["error"]
-        assert time_module.monotonic() - start < 2.5
+        assert time_module.monotonic() - start < 3.0
     finally:
         backend.close()
 

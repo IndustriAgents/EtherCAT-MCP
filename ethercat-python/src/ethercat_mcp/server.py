@@ -25,6 +25,9 @@ from .tools import SlaveMap, ToolResources, envelope, register_tools
 
 logger = logging.getLogger(__name__)
 
+# Errors from writing a reply to a client that has already disconnected.
+_UNDELIVERABLE = (anyio.ClosedResourceError, anyio.BrokenResourceError, BrokenPipeError, ConnectionResetError)
+
 INSTRUCTIONS = (
     "EtherCAT master tools. Every result is an envelope {success, data, error, meta}; meta.backend says "
     "whether a real bus (pysoem) or the simulator (mock, meta.simulated=true) answered. Call scan_network "
@@ -76,6 +79,7 @@ class EthercatMCPServer:
         self.master = master or EthercatMaster(config)
         self.slave_map = SlaveMap(config.slave_map_path)
         self.esi_parser = ESIParser(config.esi_base_path, max_bytes=config.esi_max_mb * 1024 * 1024)
+        self.client_gone = False
         self._server = EnvelopeFastMCP(
             name="EtherCAT MCP Server",
             instructions=INSTRUCTIONS,
@@ -115,10 +119,27 @@ class EthercatMCPServer:
         async with anyio.create_task_group() as tg:
             tg.start_soon(self._stop_on_signal)
             stdout = anyio.wrap_file(TextIOWrapper(protocol_out, encoding="utf-8")) if protocol_out else None
+            stdin = _NotifyOnEof(
+                anyio.wrap_file(TextIOWrapper(sys.stdin.buffer, encoding="utf-8")), self._client_disconnected
+            )
             lowlevel = self._server._mcp_server
-            async with stdio_server(stdout=stdout) as (read_stream, write_stream):
-                await lowlevel.run(read_stream, write_stream, lowlevel.create_initialization_options())
+            try:
+                async with stdio_server(stdin=stdin, stdout=stdout) as (read_stream, write_stream):
+                    await lowlevel.run(read_stream, write_stream, lowlevel.create_initialization_options())
+            except BaseExceptionGroup as group:
+                # Replies to calls that were still running when the client closed stdin have
+                # nowhere to go: a normal end, not a crash. Anything else still raises.
+                _, rest = group.split(_UNDELIVERABLE)
+                if not self.client_gone or rest is not None:
+                    raise
+                logger.info("Dropped replies for the disconnected client")
             tg.cancel_scope.cancel()
+
+    def _client_disconnected(self) -> None:
+        """stdin reached EOF: no pending call may send anything any more (INIT still follows on close)."""
+        self.client_gone = True
+        logger.info("MCP client disconnected; stopping pending device requests")
+        self.master.shutdown_calls("the MCP client disconnected (stdin closed)")
 
     async def _stop_on_signal(self) -> None:
         """Turn SIGTERM/SIGHUP (what MCP clients send on shutdown) and SIGINT into an orderly stop.
@@ -139,6 +160,29 @@ class EthercatMCPServer:
                     os._exit(0)
         except (NotImplementedError, AttributeError):  # pragma: no cover - Windows has no SIGHUP/signal receiver
             await anyio.sleep_forever()
+
+
+class _NotifyOnEof:
+    """Wraps the stdin stream and calls ``on_eof`` when the client closes it.
+
+    FastMCP stops reading on EOF but lets in-flight tool handlers finish. Without
+    this, a write still queued behind the backend lock would be sent after the
+    client is gone; ``on_eof`` cancels every pending call's token instead.
+    """
+
+    def __init__(self, inner: Any, on_eof: Callable[[], None]) -> None:
+        self._inner = inner
+        self._on_eof = on_eof
+
+    def __aiter__(self) -> AsyncIterator[str]:
+        return self._lines()
+
+    async def _lines(self) -> AsyncIterator[str]:
+        try:
+            async for line in self._inner:
+                yield line
+        finally:
+            self._on_eof()
 
 
 def guard_stdout() -> BinaryIO:

@@ -16,7 +16,8 @@ import logging
 import struct
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import partial
 from typing import Any, Protocol, TypeVar
 
@@ -69,8 +70,8 @@ REFUSAL_AL_CODES = frozenset(
 
 # Extra time on top of EthercatConfig.call_deadline_s: config_init reads every slave's EEPROM,
 # and the first SAFEOP/OP request maps the process image (CoE reads of the PDO assignment).
-SCAN_EXTRA_S = 50.0
-MAPPING_EXTRA_S = 30.0
+SCAN_EXTRA_S = 30.0
+MAPPING_EXTRA_S = 20.0
 
 # Broadcast AL-state reads before a scan: a lost frame reads as 0, so OR several.
 _SEGMENT_STATE_READS = 3
@@ -134,6 +135,82 @@ def unknown_outcome(message: str) -> EthercatMasterError:
     )
 
 
+# How often a call queued behind the backend lock re-checks whether it was cancelled.
+_LOCK_POLL_S = 0.05
+
+
+class CallToken:
+    """One tool call's permission to send anything to the bus or the mock.
+
+    Backends call :meth:`begin_send` immediately before every request that can change
+    a device, and :meth:`check` after waiting for their lock and at other points.
+    When the client cancels the call or disconnects, or the call's overall deadline
+    passes, the facade calls :meth:`cancel`. From then on nothing more is sent: a call
+    that never reached a send point ends ``not_sent`` and can never send later, even
+    from a worker thread the facade has abandoned. ``begin_send`` and ``cancel``
+    decide under one lock, so the outcome is never ambiguous.
+    """
+
+    def __init__(self, deadline_s: float | None = None) -> None:
+        self._deadline = None if deadline_s is None else time.monotonic() + deadline_s
+        self._lock = threading.Lock()
+        self._reason: str | None = None
+        self.sent = False
+
+    def remaining(self) -> float | None:
+        return None if self._deadline is None else self._deadline - time.monotonic()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._reason is not None
+
+    def cancel(self, reason: str) -> bool:
+        """Stop the call from sending anything more. Returns whether it already sent something."""
+        with self._lock:
+            if self._reason is None:
+                self._reason = reason
+            return self.sent
+
+    def _stopped(self) -> bool:
+        if self._reason is None and self._deadline is not None and time.monotonic() >= self._deadline:
+            self._reason = "its overall deadline passed"
+        return self._reason is not None
+
+    def _error(self) -> EthercatMasterError:
+        if self.sent:
+            return unknown_outcome(f"The call stopped part way because {self._reason}")
+        return EthercatMasterError(f"Not sent: {self._reason}. It will not be sent later.")
+
+    def check(self) -> None:
+        """Raise if the call was cancelled or its deadline passed."""
+        with self._lock:
+            if self._stopped():
+                raise self._error()
+
+    def begin_send(self) -> None:
+        """Pass a send point: raise instead if the call may no longer send anything."""
+        with self._lock:
+            if self._stopped():
+                raise self._error()
+            self.sent = True
+
+
+def _token(token: CallToken | None) -> CallToken:
+    return token if token is not None else CallToken()
+
+
+@contextmanager
+def locked(lock: Any, token: CallToken) -> Iterator[None]:
+    """Acquire ``lock`` while honouring ``token``: a cancelled or expired call never gets it."""
+    while not lock.acquire(timeout=_LOCK_POLL_S):
+        token.check()
+    try:
+        token.check()
+        yield
+    finally:
+        lock.release()
+
+
 class GateError(EthercatMasterError):
     """A write or state change was refused because its gate is disabled."""
 
@@ -148,15 +225,20 @@ class Backend(Protocol):
     def scanned(self) -> bool: ...
 
     def describe(self) -> dict[str, Any]: ...
-    def scan(self) -> list[dict[str, Any]]: ...
+    # Every call that may wait or touch the device takes the caller's CallToken.
+    def scan(self, token: CallToken | None = None) -> list[dict[str, Any]]: ...
     def slave_count(self) -> int: ...
-    def slave_entry(self, position: int) -> dict[str, Any]: ...
-    def read_states(self) -> list[dict[str, Any]]: ...
-    def read_pdo(self, position: int, offset: int, length: int | None) -> tuple[bytes, dict[str, Any]]: ...
-    def write_pdo(self, position: int, offset: int, data: bytes) -> dict[str, Any]: ...
-    def read_sdo(self, position: int, index: int, subindex: int) -> bytes: ...
-    def write_sdo(self, position: int, index: int, subindex: int, data: bytes) -> None: ...
-    def set_state(self, position: int, state: int) -> dict[str, Any]: ...
+    def slave_entry(self, position: int, token: CallToken | None = None) -> dict[str, Any]: ...
+    def read_states(self, token: CallToken | None = None) -> list[dict[str, Any]]: ...
+    def read_pdo(
+        self, position: int, offset: int, length: int | None, token: CallToken | None = None
+    ) -> tuple[bytes, dict[str, Any]]: ...
+    def write_pdo(self, position: int, offset: int, data: bytes, token: CallToken | None = None) -> dict[str, Any]: ...
+    def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes: ...
+    def write_sdo(
+        self, position: int, index: int, subindex: int, data: bytes, token: CallToken | None = None
+    ) -> None: ...
+    def set_state(self, position: int, state: int, token: CallToken | None = None) -> dict[str, Any]: ...
     def status(self) -> dict[str, Any]: ...
     def close(self) -> None: ...
 
@@ -494,17 +576,20 @@ class PysoemBackend:
             else:
                 next_due = time.monotonic()
 
-    def _wait_cycles(self, count: int) -> None:
-        timeout = max(1.0, count * 10 * self.config.cycle_time_us / 1_000_000)
+    def _wait_cycles(self, count: int, token: CallToken | None = None) -> None:
+        deadline = time.monotonic() + max(1.0, count * 10 * self.config.cycle_time_us / 1_000_000)
         with self._cycle_cv:
             target = self._cycle_count + count
-            done = self._cycle_cv.wait_for(
-                lambda: self._cycle_count >= target or self._cycle_error is not None or self._cycle_stop.is_set(),
-                timeout=timeout,
-            )
+            while not (self._cycle_count >= target or self._cycle_error is not None or self._cycle_stop.is_set()):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._cycle_cv.wait(min(remaining, _LOCK_POLL_S))
+                if token is not None:
+                    token.check()
             if self._cycle_error is not None:
                 raise EthercatMasterError(f"The cyclic process-data exchange stopped: {self._cycle_error}")
-            if not done or self._cycle_count < target:
+            if self._cycle_count < target:
                 raise EthercatMasterError("Timed out waiting for the process-data exchange")
 
     def _ensure_mapped(self) -> bool:
@@ -517,7 +602,8 @@ class PysoemBackend:
         try:
             size = master.config_map()
         except Exception as exc:
-            raise EthercatMasterError(f"Mapping the process image failed: {exc}") from exc
+            # config_map writes sync-manager and FMMU registers as it goes.
+            raise unknown_outcome(f"Mapping the process image failed part way: {exc}") from exc
         finally:
             master.manual_state_change = 0
         self._mapped = True
@@ -558,8 +644,9 @@ class PysoemBackend:
     def describe(self) -> dict[str, Any]:
         return {"backend": self.name, "interface": self.config.interface}
 
-    def scan(self) -> list[dict[str, Any]]:
-        with self._lock:
+    def scan(self, token: CallToken | None = None) -> list[dict[str, Any]]:
+        token = _token(token)
+        with locked(self._lock, token):
             master = self._ensure_open()
             if self._scanned:
                 master.read_state()
@@ -574,6 +661,8 @@ class PysoemBackend:
                 "segment_state_before": state_name(bits) if bits else "NONE (no answer)",
                 "reset_live_segment": bool(bits & (SAFEOP_STATE | OP_STATE)),
             }
+            # Send point: stopping process data and config_init change what the slaves see.
+            token.begin_send()
             self._stop_cycle()
             self._layouts = {}
             self._mapped = False
@@ -593,18 +682,21 @@ class PysoemBackend:
     def slave_count(self) -> int:
         return len(self._slaves)
 
-    def slave_entry(self, position: int) -> dict[str, Any]:
-        with self._lock:
+    def slave_entry(self, position: int, token: CallToken | None = None) -> dict[str, Any]:
+        with locked(self._lock, _token(token)):
             return self._describe(position, self._require_slave(position))
 
-    def read_states(self) -> list[dict[str, Any]]:
-        with self._lock:
+    def read_states(self, token: CallToken | None = None) -> list[dict[str, Any]]:
+        with locked(self._lock, _token(token)):
             master = self._require_scanned()
             master.read_state()
             return [self._state_entry(i, slave) for i, slave in enumerate(self._slaves)]
 
-    def read_pdo(self, position: int, offset: int, length: int | None) -> tuple[bytes, dict[str, Any]]:
-        with self._lock:
+    def read_pdo(
+        self, position: int, offset: int, length: int | None, token: CallToken | None = None
+    ) -> tuple[bytes, dict[str, Any]]:
+        token = _token(token)
+        with locked(self._lock, token):
             slave = self._require_slave(position)
             self._require_cycling()
             self._master.read_state()
@@ -612,7 +704,7 @@ class PysoemBackend:
             bits = self._alignment(position, slave, "input")
             all_exchanging = self._pd_slaves_in((SAFEOP_STATE, OP_STATE))
         # Wait for one exchange after the state check, so the inputs are current.
-        self._wait_cycles(1)
+        self._wait_cycles(1, token)
         with self._pd_lock:
             image = bytes(slave.input)
             wkc = self._last_wkc
@@ -627,7 +719,7 @@ class PysoemBackend:
                 "the frame, so the inputs may be stale"
             )
         meta = {"wkc": wkc, "expected_wkc": expected, "cycle": self._cycle_count}
-        with self._lock:
+        with locked(self._lock, token):
             note = self._wkc_note()
         if note:
             meta["wkc_note"] = note
@@ -640,8 +732,9 @@ class PysoemBackend:
         meta["state"] = state_name(int(slave.state))
         return data, meta
 
-    def write_pdo(self, position: int, offset: int, data: bytes) -> dict[str, Any]:
-        with self._lock:
+    def write_pdo(self, position: int, offset: int, data: bytes, token: CallToken | None = None) -> dict[str, Any]:
+        token = _token(token)
+        with locked(self._lock, token):
             slave = self._require_slave(position)
             self._require_cycling()
             self._master.read_state()
@@ -657,11 +750,12 @@ class PysoemBackend:
                 image = bytearray(slave.output)
                 check_slice(bytes(image), offset, len(data), "output", position)
                 image[offset : offset + len(data)] = data
+                token.begin_send()  # send point: the next frame carries these outputs
                 slave.output = bytes(image)
         # From here on the outputs are in the image and go out with every frame: never resend,
         # and whatever goes wrong while confirming them is "unknown", never "not sent".
         try:
-            return self._confirm_outputs(position, slave)
+            return self._confirm_outputs(position, slave, token)
         except EthercatMasterError as exc:
             if exc.outcome == UNKNOWN:
                 raise
@@ -671,12 +765,12 @@ class PysoemBackend:
                 f"The outputs are in the process image, but confirming them failed: {type(exc).__name__}: {exc}"
             ) from exc
 
-    def _confirm_outputs(self, position: int, slave: Any) -> dict[str, Any]:
+    def _confirm_outputs(self, position: int, slave: Any, token: CallToken) -> dict[str, Any]:
         # Two exchanges: the first carries the new outputs, the second is fully after them.
-        self._wait_cycles(2)
+        self._wait_cycles(2, token)
         with self._pd_lock:
             wkc = self._last_wkc
-        with self._lock:
+        with locked(self._lock, token):
             self._master.read_state()
             target_ok = int(slave.state) == OP_STATE
             all_op = self._pd_slaves_in((OP_STATE,))
@@ -725,8 +819,8 @@ class PysoemBackend:
             return f"{where} failed: {kind} {code}: {getattr(exc, 'desc', '')}".rstrip()
         return f"{where} failed: {kind}: {exc}"
 
-    def read_sdo(self, position: int, index: int, subindex: int) -> bytes:
-        with self._lock:
+    def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes:
+        with locked(self._lock, _token(token)):
             slave = self._require_slave(position)
             try:
                 raw = slave.sdo_read(index, subindex, release_gil=True)
@@ -734,11 +828,14 @@ class PysoemBackend:
                 raise EthercatMasterError(self._sdo_error("read", position, index, subindex, exc)) from exc
             return bytes(raw)
 
-    def write_sdo(self, position: int, index: int, subindex: int, data: bytes) -> None:
-        with self._lock:
+    def write_sdo(self, position: int, index: int, subindex: int, data: bytes, token: CallToken | None = None) -> None:
+        token = _token(token)
+        with locked(self._lock, token):
             slave = self._require_slave(position)
+            payload = bytes(data)
+            token.begin_send()  # send point: the download goes out now
             try:
-                slave.sdo_write(index, subindex, bytes(data), release_gil=True)
+                slave.sdo_write(index, subindex, payload, release_gil=True)
             except Exception as exc:
                 message = self._sdo_error("write", position, index, subindex, exc)
                 kind = type(exc).__name__
@@ -767,12 +864,15 @@ class PysoemBackend:
             and getattr(exc, "subindex", None) == subindex
         )
 
-    def set_state(self, position: int, state: int) -> dict[str, Any]:
-        with self._lock:
+    def set_state(self, position: int, state: int, token: CallToken | None = None) -> dict[str, Any]:
+        token = _token(token)
+        with locked(self._lock, token):
             slave = self._require_slave(position)
             mapped_now = False
             if state in (SAFEOP_STATE, OP_STATE):
-                mapped_now = self._ensure_mapped()
+                if not self._mapped:
+                    token.begin_send()  # send point: mapping writes sync-manager, FMMU and watchdog registers
+                    mapped_now = self._ensure_mapped()
                 self._require_cycling()
             self._master.read_state()
             current = int(slave.state)
@@ -780,20 +880,24 @@ class PysoemBackend:
             if state == OP_STATE and current != OP_STATE:
                 # Enter OP with zero outputs, never with bytes left in the image from before, and
                 # let two frames carry the zeros into the slave's sync manager before asking for OP.
+                token.check()
                 self._clear_outputs(position, slave)
-                self._wait_cycles(2)
+                self._wait_cycles(2, token)
             # A slave with its error indicator set ignores requests until the error is acknowledged.
             slave.state = state | STATE_ACK if current & STATE_ERROR else state
+            sent_before = token.sent
+            token.begin_send()  # send point: the AL control write
             try:
                 slave.write_state()
             except Exception as exc:
-                if type(exc).__name__ == "NetworkInterfaceNotOpenError":
+                if type(exc).__name__ == "NetworkInterfaceNotOpenError" and not sent_before:
                     raise EthercatMasterError(f"Requesting {STATE_NAMES[state]} failed: {exc}") from exc
                 raise unknown_outcome(f"Requesting {STATE_NAMES[state]} for slave {position} failed: {exc}") from exc
             # The request may have reached the slave: from here on, failures are "unknown".
             try:
                 deadline = time.monotonic() + self.config.timeout_us / 1_000_000
                 while slave.state_check(state, _STATE_POLL_US) != state and time.monotonic() < deadline:
+                    token.check()  # raises "unknown" (the request went out) if the call was cancelled
                     time.sleep(_STATE_POLL_SLEEP_S)
                 self._master.read_state()
                 final = int(slave.state)
@@ -803,6 +907,12 @@ class PysoemBackend:
                     # that entering OP later does not re-apply stale bytes.
                     self._clear_outputs(position, slave)
                 entry = self._state_entry(position, slave)
+            except EthercatMasterError as exc:
+                if exc.outcome == UNKNOWN:
+                    raise
+                raise unknown_outcome(
+                    f"Requested {STATE_NAMES[state]} for slave {position}, but checking the result failed: {exc}"
+                ) from exc
             except Exception as exc:
                 raise unknown_outcome(
                     f"Requested {STATE_NAMES[state]} for slave {position}, but checking the result failed: {exc}"
@@ -886,32 +996,57 @@ def create_backend(config: EthercatConfig) -> Backend:
 
 
 class EthercatMaster:
-    """Async facade over a backend. Enforces the write and state-change gates."""
+    """Async facade over a backend. Enforces the gates, deadlines and cancellation."""
 
     def __init__(self, config: EthercatConfig, backend: Backend | None = None) -> None:
         self.config = config
         self.backend: Backend = backend or create_backend(config)
+        self._pending: set[CallToken] = set()
+        self._closing: str | None = None
+
+    def shutdown_calls(self, reason: str) -> None:
+        """Stop every pending call from sending anything more, and refuse new ones.
+
+        Called when the MCP client disconnects (stdin closed) and when the server shuts
+        down: FastMCP lets in-flight handlers finish, and without this a write still
+        queued behind the backend lock would go out after the client is gone.
+        """
+        self._closing = reason
+        for token in list(self._pending):
+            token.cancel(reason)
 
     async def _run(
         self, func: Callable[..., T], *args: Any, write: bool = False, extra_s: float = 0.0
     ) -> tuple[T, float]:
         """Run a blocking backend call in a worker thread, bounded by an overall deadline.
 
-        Every SOEM and mock call has its own timeouts, but a call must never hang with
-        no outcome (suite rule 12). On expiry the worker thread is abandoned (threads
-        cannot be cancelled; the backend lock keeps later calls from overlapping it), a
-        read becomes a clean error and a write an "unknown" outcome.
+        The call gets a CallToken. Whatever ends the wait without a result (the
+        deadline, the client cancelling, the client disconnecting) cancels the token
+        first, so the abandoned worker thread can never send anything afterwards
+        (suite rules 1 and 12). A write that had not passed a send point is
+        ``not_sent``; one that had is ``unknown``.
         """
+        what = getattr(func, "__name__", "request")
+        if self._closing is not None:
+            raise EthercatMasterError(f"Not sent: {self._closing}.")
         deadline = self.config.call_deadline_s + extra_s
+        token = CallToken(deadline)
+        self._pending.add(token)
         start = time.perf_counter()
         try:
             with anyio.fail_after(deadline):
-                result = await anyio.to_thread.run_sync(partial(func, *args), abandon_on_cancel=True)
+                result = await anyio.to_thread.run_sync(partial(func, *args, token=token), abandon_on_cancel=True)
         except TimeoutError:
-            what = getattr(func, "__name__", "request")
-            if write:
+            sent = token.cancel(f"its overall deadline of {deadline:.0f} s passed")
+            if write and sent:
                 raise unknown_outcome(f"The {what} request did not finish within {deadline:.0f} s") from None
-            raise EthercatMasterError(f"The {what} request did not finish within {deadline:.0f} s") from None
+            suffix = "; it was not sent and will not be sent later" if write else ""
+            raise EthercatMasterError(f"The {what} request did not finish within {deadline:.0f} s{suffix}") from None
+        except BaseException:
+            token.cancel("the call was cancelled")
+            raise
+        finally:
+            self._pending.discard(token)
         return result, round((time.perf_counter() - start) * 1000.0, 3)
 
     def describe(self) -> dict[str, Any]:
@@ -934,11 +1069,11 @@ class EthercatMaster:
         devices, ms = await self._run(self.backend.scan, write=True, extra_s=SCAN_EXTRA_S)
         return devices, {"duration_ms": ms, "count": len(devices), **self.backend.last_scan}
 
-    def _slave_sync(self, position: int) -> dict[str, Any]:
+    def _slave_sync(self, position: int, token: CallToken | None = None) -> dict[str, Any]:
         if not self.backend.scanned:
             raise EthercatMasterError("No bus scan yet: call scan_network first")
-        self.backend.read_states()  # refresh the AL state before reporting it
-        return self.backend.slave_entry(position)
+        self.backend.read_states(token=token)  # refresh the AL state before reporting it
+        return self.backend.slave_entry(position, token=token)
 
     async def get_slave(self, position: int) -> tuple[dict[str, Any], dict[str, Any]]:
         entry, ms = await self._run(self._slave_sync, position)
@@ -967,10 +1102,10 @@ class EthercatMaster:
         result, ms = await self._run(self.backend.set_state, position, state, write=True, extra_s=MAPPING_EXTRA_S)
         return result, {"duration_ms": ms}
 
-    def _test_sync(self, position: int) -> dict[str, Any]:
+    def _test_sync(self, position: int, token: CallToken | None = None) -> dict[str, Any]:
         if not self.backend.scanned:
             raise EthercatMasterError("No bus scan yet: call scan_network first")
-        states = self.backend.read_states()
+        states = self.backend.read_states(token=token)
         if not 0 <= position < len(states):
             raise EthercatMasterError(
                 f"Slave position {position} is out of range (the last scan found {len(states)} slave(s))"
@@ -980,7 +1115,7 @@ class EthercatMaster:
             raise EthercatMasterError(f"Slave {position} did not answer the AL state read")
         result: dict[str, Any] = {"slave_position": position, "responding": True, "state": entry["state"]}
         try:
-            raw = self.backend.read_sdo(position, 0x1000, 0)
+            raw = self.backend.read_sdo(position, 0x1000, 0, token=token)
             result["coe"] = {"ok": True, "device_type": "0x" + raw[::-1].hex().upper() if raw else None}
         except EthercatMasterError as exc:
             result["coe"] = {"ok": False, "error": str(exc)}
@@ -998,8 +1133,9 @@ class EthercatMaster:
         return status
 
     async def close(self) -> None:
-        """Close the backend, bounded: a device call stuck in a worker thread holds the backend
-        lock, and shutdown must not wait for it forever."""
+        """Stop pending calls, then close the backend (bounded: a device call stuck in a
+        worker thread holds the backend lock, and shutdown must not wait for it forever)."""
+        self.shutdown_calls("the server is shutting down")
         try:
             with anyio.fail_after(self.config.call_deadline_s):
                 await anyio.to_thread.run_sync(self.backend.close, abandon_on_cancel=True)
