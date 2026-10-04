@@ -53,6 +53,31 @@ jobs:
       - name: Tests (pytest)
         run: uv run --locked pytest
 
+  # Suite rule: the floors in pyproject.toml must be honest. Install the lowest
+  # versions of the direct dependencies they allow and run the whole suite.
+  server-lowest:
+    name: MCP server, lowest direct dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ethercat-python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install the lowest direct dependencies pyproject.toml allows
+        run: |
+          uv venv --python 3.11 "$RUNNER_TEMP/lowest"
+          uv pip install --python "$RUNNER_TEMP/lowest/bin/python" --resolution lowest-direct -e . "pytest>=8.2.0"
+          uv pip list --python "$RUNNER_TEMP/lowest/bin/python" | grep -iE "^(anyio|lxml|mcp|pydantic|pysoem|python-dotenv|pytest) "
+
+      - name: Tests (pytest)
+        run: '"$RUNNER_TEMP/lowest/bin/python" -m pytest -p no:cacheprovider'
+
   mock:
     name: Mock slave (ethercat-mock-slave)
     runs-on: ubuntu-latest

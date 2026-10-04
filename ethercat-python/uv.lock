@@ -216,10 +216,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", specifier = ">=4.0.0" },
-    { name = "lxml", specifier = ">=4.9.0" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.22.0" },
-    { name = "pydantic", specifier = ">=2.6.0" },
+    { name = "anyio", specifier = ">=4.7.0" },
+    { name = "lxml", specifier = ">=4.9.3" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.22.0,<2" },
+    { name = "pydantic", specifier = ">=2.11.0" },
     { name = "pysoem", specifier = ">=1.1.12" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
 ]
