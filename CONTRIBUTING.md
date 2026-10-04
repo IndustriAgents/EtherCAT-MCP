@@ -45,26 +45,36 @@ A change that breaks one of these needs a reason in the pull request:
 2. **Read-only by default.** Tools that write PDOs or SDOs go through
    `ETHERCAT_WRITES_ENABLED`; slave state changes need it and
    `ETHERCAT_STATE_CHANGE_ENABLED`. Both default to `false`. A new tool that
-   can change equipment must use the same gates. The gates are only read from
-   the process environment or `--env-file`, never from an automatically found
-   `.env`.
+   can change equipment must use the same gates, and its MCP annotations must
+   say `destructiveHint=True, idempotentHint=False` (read-only tools:
+   `readOnlyHint=True`). The gates, and the limits that weaken a safety check,
+   are only read from the process environment or `--env-file`, never from the
+   implicit `ethercat-python/.env`; no `.env` is ever read from the working
+   directory.
 3. **Never report what did not happen.** A tool returns `success: true` only if
    the bus (or the mock) confirmed the operation as far as EtherCAT lets a
    master tell (for process data, the frame's working counter and the slave's
    AL state), and never returns made-up device data. If something is not
    implemented, say so with `success: false`.
 4. **Never repeat a write.** A device-changing request goes out once. Only
-   (re)connecting may be retried. If the answer is lost, report
-   `meta.outcome: "unknown"` with `meta.request_sent: true` and tell the caller
-   to read back before retrying; other outcomes are `written`, `rejected` and
-   `not_sent`.
-5. **Strict arguments.** Positions, offsets, indexes and byte values are strict
+   (re)connecting may be retried. Report `meta.outcome`: `not_sent` only if it
+   failed before anything left; `rejected` only for a refusal that by the
+   protocol comes before anything is applied (see the README's
+   [Safety model](README.md#safety-model)); everything else after the send is
+   `unknown` with `meta.request_sent: true`, and tells the caller to read back
+   before retrying.
+5. **Deadlines.** Every device call runs under an overall deadline
+   (`EthercatMaster._run`): on expiry a read is an error, a write is
+   `unknown`. Nothing may hang.
+6. **Strict arguments.** Positions, offsets, indexes and byte values are strict
    integers (`pydantic.StrictInt`): a boolean is never a number.
-6. **A mock for the protocol.** If you add a tool, make it work against
+7. **A mock for the protocol.** If you add a tool, make it work against
    `ethercat-mock-slave` through the mock transport (`ETHERCAT_BACKEND=mock`)
    and add it to the end-to-end test and to the stdout test's tool list.
-7. **Safety tests must be able to fail.** When you add a protection, add a test
-   and check that it fails with the protection removed.
+8. **Safety tests must be able to fail.** When you add a protection, add a test
+   and check that it fails with the protection removed. Mocks that tests start
+   must exit when the test run dies (`--exit-on-stdin-eof`, see
+   `tests/conftest.py`).
 
 ## Getting set up
 

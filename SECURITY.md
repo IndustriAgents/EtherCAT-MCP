@@ -33,16 +33,22 @@ application on the office network.
   parameters. A write is sent once and never repeated; if its answer is lost,
   the result says `meta.outcome: "unknown"`, and you should read back before
   retrying.
-- **A `.env` file cannot turn the gates on.** The server reads a `.env` in its
-  working directory for connection settings, but ignores (with a warning)
-  `ETHERCAT_WRITES_ENABLED` and `ETHERCAT_STATE_CHANGE_ENABLED` there: when an
-  MCP client starts the server, that directory is the client's project. Set
-  the gates in the process environment or in a file you pass with
-  `--env-file`. See `ethercat-python/.env.example`.
+- **No `.env` from the working directory, and none that weakens safety.**
+  When an MCP client starts the server, the working directory is the client's
+  project, and settings such as the interface or the mock address decide where
+  a write goes. The server never reads a `.env` there or in a parent directory.
+  The only file it reads by itself is `ethercat-python/.env` of a source
+  checkout (none for an installed package), and that file may only set
+  `ETHERCAT_*` and `SLAVE_MAP_FILE`, never the gates
+  (`ETHERCAT_WRITES_ENABLED`, `ETHERCAT_STATE_CHANGE_ENABLED`) or the limits
+  `ETHERCAT_PD_WATCHDOG_MS` and `ETHERCAT_EXPECTED_WKC`. Anything else in it is
+  ignored with a warning, whatever the letter case. Set the gates in the process
+  environment or in a file you pass with `--env-file`. See
+  `ethercat-python/.env.example`.
 - **Know that sudo drops your environment.** A gate you exported in your shell
   does not reach a server started with sudo; only the variables on the sudo
-  command line, an `--env-file`, or a `.env` in the working directory do.
-  `ethercat-mcp --print-config` shows what the process really sees.
+  command line or in an `--env-file` do. `ethercat-mcp --print-config` shows
+  what the process really sees.
 - **A scan is not passive.** `scan_network` makes this server the bus master:
   SOEM resets every slave on the segment to INIT and then requests PRE-OP.
   The server first reads the AL state of the whole segment and refuses if a
@@ -71,7 +77,14 @@ application on the office network.
   mock slave listens on `127.0.0.1` by default; keep it there.
 - **ESI files are read with the server's privileges.** `load_esi_file` opens
   the path the client passes (as root, if you run the server as root). It
-  returns only parsed ESI fields and does not resolve XML entities or DTDs.
+  returns only parsed ESI fields. A file that declares a DOCTYPE or ENTITY is
+  refused before parsing (libxml2 expands internal entities in attribute values
+  even with entity resolution off, so a 100 KB file could cost seconds and
+  hundreds of MB), as is a file larger than `ETHERCAT_ESI_MAX_MB`. Parsing runs
+  off the MCP event loop with a deadline.
+- **Every device call has a deadline.** A device or mock call that does not
+  finish within its overall deadline ends the tool call: a read with an error,
+  a write with `meta.outcome: "unknown"`.
 - **Never point it at a safety system.** Functional-safety traffic (for
   example Safety over EtherCAT / FSoE) is out of scope for this project.
 

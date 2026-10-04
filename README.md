@@ -127,10 +127,10 @@ there, or in a file the server reads itself:
 sudo PYTHONDONTWRITEBYTECODE=1 .venv/bin/ethercat-mcp --env-file ethercat.env
 ```
 
-A `.env` in the current directory (sudo keeps the working directory) is read
-too, but only for connection settings: it can never turn the write or
-state-change gates on (see [Configuration](#configuration)). Gates go on the
-command line or in an `--env-file`.
+The project's own `ethercat-python/.env` is read too, but only for this
+server's non-safety settings: it can never turn the write or state-change gates
+on (see [Configuration](#configuration)). Gates go on the command line or in an
+`--env-file`.
 `sudo --preserve-env=ETHERCAT_INTERFACE,ETHERCAT_WRITES_ENABLED ...` also works
 where the sudoers policy allows it. To check what a root-run server actually
 sees, add `--print-config`: it prints the effective settings as JSON and exits.
@@ -209,8 +209,9 @@ with the reason (for example
 
 ## Configuration
 
-Set these in the server's environment (for example the `env` block above), or
-in a `.env` file:
+Set these in the server's environment (for example the `env` block above), in
+a file passed with `--env-file`, or (except the safety settings) in
+`ethercat-python/.env`:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -226,22 +227,29 @@ in a `.env` file:
 | `ETHERCAT_MOCK_PORT` | `6700` | Mock slave port (`mock` backend) |
 | `SLAVE_MAP_FILE` | unset | JSON file of slave aliases (see below) |
 | `ETHERCAT_ESI_PATH` | unset | Directory searched for ESI files passed to `load_esi_file` by name |
+| `ETHERCAT_ESI_MAX_MB` | `16` | Largest ESI file `load_esi_file` parses (1 to 512) |
 
 Booleans accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`. A value
 that cannot be used (for example `ETHERCAT_WRITES_ENABLED=maybe`) stops the
 server at startup with a message on stderr.
 
-All settings are read once at startup, after the `.env` file is loaded. The
-server loads `.env` from the directory it is started in (with
-`uv --directory .../ethercat-python run`, that is `ethercat-python/`), never
-from parent directories. `--env-file PATH` loads another file instead.
-Variables already set in the environment win over the file.
+All settings are read once at startup. `--env-file PATH` loads a file you
+choose, and is trusted like the environment. Without it, the only `.env` the
+server reads by itself is `ethercat-python/.env` of a source checkout, found
+from the package's own location: **never** a `.env` in the working directory or
+a parent directory (when a client starts the server, the working directory is
+the client's project, which you may not control), and none at all when the
+package is installed in site-packages. Variables already set in the
+environment win over either file.
 
-**The gates only come from the real environment or `--env-file`.** A `.env`
-that the server finds by itself may set connection settings, but
-`ETHERCAT_WRITES_ENABLED` and `ETHERCAT_STATE_CHANGE_ENABLED` in it are ignored
-with a warning on stderr: when a client starts the server directly, the working
-directory is the client's project, which you may not control.
+**The implicit `.env` cannot weaken safety.** `ethercat-python/.env` may only
+set this server's own variables (`ETHERCAT_*` and `SLAVE_MAP_FILE`). The gates
+`ETHERCAT_WRITES_ENABLED` and `ETHERCAT_STATE_CHANGE_ENABLED`, and the limits
+`ETHERCAT_PD_WATCHDOG_MS` and `ETHERCAT_EXPECTED_WKC`, are ignored there, as is
+anything else (`PATH`, `LD_PRELOAD`, `PYTHONPATH`, ...), each with a warning on
+stderr. Names are compared case-insensitively (Windows upper-cases environment
+variable names), and `export` prefixes and quotes are handled. Set those in the
+process environment or an `--env-file`.
 [`ethercat-python/.env.example`](ethercat-python/.env.example) lists the
 settings.
 
@@ -265,9 +273,11 @@ strings such as `"0x10"`:
 - **A scan resets the segment.** `scan_network` runs SOEM's `config_init`,
   which resets every slave on the segment to INIT and then requests PRE-OP.
   That is how SOEM enumerates a bus, so the tool is marked destructive. Before
-  the first scan, one broadcast read of the AL state checks the segment: if any
-  slave is in SAFEOP or OP (another master may be running it), the scan is
-  refused unless both gates are on. A rescan is always refused while a slave
+  each scan, broadcast reads of the AL state check the segment (three, ORed, so
+  one lost frame does not hide a running slave): if any slave is in SAFEOP or
+  OP (another master may be running it), the scan is refused unless both gates
+  are on. `meta.segment_state_before` and `meta.reset_live_segment` report what
+  a scan reset. A rescan is always refused while a slave
   this server brought up is in SAFEOP or OP. Never connect the server to a
   segment another master is running.
 - **Process data needs a state change.** The process image is mapped
@@ -278,23 +288,43 @@ strings such as `"0x10"`:
 - **No stale outputs.** SOEM never clears the master's process image, so old
   bytes would otherwise be applied again when a slave re-enters OP, or reach
   whichever slave maps to the same place after a rescan. The server zeroes the
-  output image after mapping, before a slave enters OP from a lower state, and
-  whenever a slave ends up outside OP.
+  output image after mapping, before a slave enters OP from a lower state (and
+  lets two frames carry the zeros into the slave's sync manager before asking
+  for OP, because a slave applies that buffer the moment it enters OP), and
+  whenever a slave ends up outside OP. For a bit-packed slave only its own bits
+  are cleared.
 - **Working counters.** `read_pdo` fails if the last frame was lost (working
   counter 0 or less), or if every slave with process data is in SAFEOP/OP and
   the counter is below the group's expected value. `write_pdo` succeeds only
   when the frame that carried the outputs came back with the full expected
-  counter (all process-data slaves in OP, `meta.verified: "expected_wkc"`), or,
-  when not all of them are in OP, with a counter above 0 and the target still in
-  OP without error (`meta.verified: "slave_state"`). `ETHERCAT_EXPECTED_WKC`
-  sets a fixed requirement instead.
-- **No duplicate writes.** `write_pdo`, `write_sdo` and `set_slave_state` send
-  their request once. Every result carries `meta.outcome`: `written`,
-  `rejected` (the slave refused, for example an SDO abort), `not_sent`, or
-  `unknown` with `meta.request_sent: true` when the answer was lost; then the
-  error says the request may have been applied, and you should read back
-  before retrying. Outputs that `write_pdo` placed in the process image stay
-  there and keep going out every cycle.
+  counter (all process-data slaves in OP, `meta.verified: "expected_wkc"`;
+  `"configured_wkc"` with `ETHERCAT_EXPECTED_WKC`). When not all of them are in
+  OP, the group's count cannot be expected, so the check is weaker: a counter
+  above 0 and the target still in OP without error
+  (`meta.verified: "slave_state_only"`), which does not prove that the target
+  itself processed the frame. Where bit-packed slaves share bytes, SOEM's
+  expected count counts such a byte once, and `meta.wkc_note` says so.
+- **No duplicate writes.** `write_pdo`, `write_sdo`, `set_slave_state` and
+  `scan_network` send their request once. Every result carries `meta.outcome`
+  and `meta.request_sent`:
+  - `written`: the bus or the slave confirmed it;
+  - `not_sent`: refused or failed before anything left the master (gates,
+    invalid arguments, closed interface);
+  - `rejected`: only for refusals that by the protocol come before anything is
+    applied: an SDO abort for an expedited download (at most 4 bytes) that
+    names this slave, index and subindex, or an AL status code that refuses a
+    transition while the slave is still in its starting state;
+  - `unknown` for everything else after the send: lost or late answers, an
+    abort of a longer (possibly segmented) download, an error that SOEM's
+    shared error ring may hold for another request, a mailbox or packet
+    error, a slave that reached the state and then faulted, or a failure while
+    confirming. The error then says the request may have been applied: read
+    back before retrying. Outputs that `write_pdo` placed in the process image
+    stay there and keep going out every cycle.
+- **Deadlines.** Every device call has an overall deadline
+  (4 × `ETHERCAT_TIMEOUT` + 10 s; longer for a scan and for the first
+  SAFEOP/OP request, which maps the image). On expiry a read fails cleanly and a
+  write is `unknown`. Shutdown is bounded the same way.
 - **Watchdog.** When the image is mapped, the process-data watchdog of every
   slave with outputs is set to `ETHERCAT_PD_WATCHDOG_MS` (PySOEM's
   `set_watchdog`, which PySOEM marks experimental). A slave that refuses keeps
@@ -328,7 +358,7 @@ strings such as `"0x10"`:
 | `set_slave_state` | Gated by `ETHERCAT_WRITES_ENABLED` and `ETHERCAT_STATE_CHANGE_ENABLED`. Requests `INIT`, `PREOP`, `SAFEOP` or `OP` for one slave (acknowledging a pending AL error, zeroing its outputs around OP) and waits until it is reached; reports the AL status code if not. |
 | `list_slaves` | Aliases from `SLAVE_MAP_FILE`, with an error per unusable entry. |
 | `read_slave_by_alias` / `write_slave_by_alias` | Resolve an alias to position, offset and length, then do what `read_pdo` / `write_pdo` do (same rules, same write gate). |
-| `load_esi_file` | Parses an ESI XML file: vendor, devices, and for one selected device (`device_type`, `revision`) its object dictionary and Tx/Rx PDO mappings. No bus access. |
+| `load_esi_file` | Parses an ESI XML file: vendor, devices, and for one selected device (`device_type`, `revision`) its object dictionary and Tx/Rx PDO mappings. No bus access. Files that declare a DOCTYPE or ENTITY, or exceed `ETHERCAT_ESI_MAX_MB`, are refused. |
 
 Index arguments take hex with a `0x` prefix (`"0x1018"`), ESI-style `#x1018`,
 or decimal (`"4120"`). Positions, offsets, indexes and byte values are strict
@@ -367,10 +397,11 @@ transport (`ETHERCAT_BACKEND=mock`) instead of a network interface.
   mapping SOEM reads from CoE or SII), no FoE/EoE, no cable redundancy, and no
   automatic recovery of lost slaves.
 - **Working counters are per frame.** A working counter covers every slave in
-  the frame, so even the full count does not say which slave missed a frame,
-  and while some process-data slaves are below OP, `write_pdo` relies on the
-  target's AL state instead. Set `ETHERCAT_EXPECTED_WKC` for a fixed
-  requirement.
+  the frame, so even the full count does not say which slave missed a frame.
+  While some process-data slaves are below OP, `write_pdo` can only check the
+  target's AL state (`meta.verified: "slave_state_only"`), and where bit-packed
+  slaves share bytes SOEM's expected count is lower than the real one
+  (`meta.wkc_note`). Set `ETHERCAT_EXPECTED_WKC` for a fixed requirement.
 - **Bit-packed slaves.** SOEM packs slaves with fewer than 8 bits of process
   data (for example 2- or 4-channel digital terminals) into bytes shared with
   their neighbours, and PySOEM's process-image view does not say which bits are
