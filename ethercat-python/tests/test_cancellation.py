@@ -508,16 +508,59 @@ def test_sdo_timeouts_are_clamped_to_the_time_left() -> None:
     try:
         backend.scan()
         slave = backend._slaves[3]
-        backend.write_sdo(3, 0x8000, 6, b"\x01", token=CallToken(0.5))
-        backend.read_sdo(3, 0x8000, 6, token=CallToken(0.4))
-        assert all(timeout <= 450_000 for timeout in slave.timeouts_seen), slave.timeouts_seen
+        backend.write_sdo(3, 0x8000, 6, b"\x01", token=CallToken(0.5))  # expedited: one exchange
+        assert slave.timeouts_seen[-1] <= 424_000
+        backend.read_sdo(3, 0x8000, 6, token=CallToken(1.0))  # budgeted as a 256-byte upload: 12 exchanges
+        assert slave.timeouts_seen[-1] <= 53_200
         assert fake.masters[0].sdo_write_timeout == DEFAULT_SDO_TIMEOUT_US  # restored afterwards
+        assert fake.masters[0].sdo_read_timeout == DEFAULT_SDO_TIMEOUT_US
         backend.write_sdo(3, 0x8000, 6, b"\x01", token=CallToken(30))
         assert slave.timeouts_seen[-1] == DEFAULT_SDO_TIMEOUT_US
-        with pytest.raises(EthercatMasterError, match="will not be sent later") as info:
-            backend.write_sdo(3, 0x8000, 6, b"\x02", token=CallToken(0.1))
+        writes = len([call for call in slave.sdo_calls if call[0] == "write"])
+        with pytest.raises(EthercatMasterError, match="do not fit") as info:
+            backend.write_sdo(3, 0x8000, 6, bytes(300), token=CallToken(0.3))  # 14 exchanges cannot fit
         assert info.value.outcome == "not_sent"
-        assert fake.device(3).objects[(0x8000, 6)][0] == b"\x01"
+        assert len([call for call in slave.sdo_calls if call[0] == "write"]) == writes  # nothing went out
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize("mailbox_bytes", [128, 64, 48, 32])
+def test_a_segmented_download_never_sends_after_the_deadline(
+    mailbox_bytes: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's timing model of SOEM's segmented download (ethercatcoe.c), against a slow slave.
+
+    Per exchange, ecx_mbxsend waits up to EC_TIMEOUTTXM (20 ms) for the mailbox to empty and then
+    sends; the slave answers just before the per-exchange timeout. The first frame carries
+    mbx_l - 16 data bytes, each further segment 7 more.
+    """
+    from fake_pysoem import FakeSlave
+
+    from ethercat_mcp.ec_master import CallToken
+
+    config = EthercatConfig.from_env({"ETHERCAT_INTERFACE": "fake0", "ETHERCAT_TIMEOUT": "100000", **GATES})
+    fake = FakePysoem()
+    backend = PysoemBackend(config, pysoem_module=fake)
+    sends: list[float] = []
+
+    def slow_segmented_write(self, index, subindex, data, ca=False, *, release_gil=None):
+        first, segment = mailbox_bytes - 16, mailbox_bytes - 16 + 7
+        exchanges = 1 + -(-max(0, len(data) - first) // segment)
+        for _ in range(exchanges):
+            time.sleep(0.019)  # waiting for the mailbox to empty
+            sends.append(time.monotonic())  # this segment goes out
+            time.sleep(0.99 * self._master.sdo_write_timeout / 1e6)  # the slave answers just in time
+
+    monkeypatch.setattr(FakeSlave, "sdo_write", slow_segmented_write)
+    try:
+        backend.scan()
+        token = CallToken(1.0)
+        deadline = time.monotonic() + 1.0
+        backend.write_sdo(3, 0x8000, 6, bytes(300), token=token)
+        assert sends, "the download was refused although it fits"
+        late = [round(when - deadline, 3) for when in sends if when > deadline]
+        assert not late, f"{len(late)} segment(s) sent after the deadline: {late}"
     finally:
         backend.close()
 

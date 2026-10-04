@@ -77,9 +77,18 @@ MAPPING_EXTRA_S = 20.0
 # the PDO assignment, register writes). They only start with at least this much deadline left.
 MIN_LEFT_FOR_SCAN_S = 10.0
 MIN_LEFT_FOR_MAPPING_S = 10.0
-# An SDO transfer needs at least this much; its SOEM timeout is clamped to the time left.
-MIN_LEFT_FOR_SDO_S = 0.2
+# SDO transfers: SOEM's timeout applies to each mailbox exchange, and a segmented transfer has one
+# exchange per segment. PySOEM does not expose the slave's mailbox size, so the budget assumes the
+# smallest mailbox SOEM handles: 32 bytes, i.e. 16 data bytes in the first frame (mbx_l - 16) and
+# 23 in each further segment (+7). Every exchange also has fixed waits before the timeout applies:
+# up to EC_TIMEOUTTXM (20 ms) for the mailbox to empty and EC_TIMEOUTRET3 (6 ms) for the write.
 DEFAULT_SDO_TIMEOUT_US = 700_000
+SDO_FIRST_FRAME_BYTES = 16
+SDO_SEGMENT_BYTES = 23
+SDO_EXCHANGE_OVERHEAD_S = 0.020 + 0.006
+SDO_MARGIN_S = 0.05  # the initial mailbox flush, scheduling
+MIN_SDO_EXCHANGE_TIMEOUT_S = 0.02  # below this a reply cannot reasonably arrive; refuse instead
+SDO_UPLOAD_BUDGET_BYTES = 256  # PySOEM's default upload buffer
 
 # Broadcast AL-state reads before a scan: a lost frame reads as 0, so OR several.
 _SEGMENT_STATE_READS = 3
@@ -843,35 +852,57 @@ class PysoemBackend:
             return f"{where} failed: {kind} {code}: {getattr(exc, 'desc', '')}".rstrip()
         return f"{where} failed: {kind}: {exc}"
 
-    @contextmanager
-    def _sdo_timeouts(self, token: CallToken, payload_len: int = 0) -> Iterator[None]:
-        """Clamp SOEM's SDO timeouts to the time left, so a transfer cannot outlive the deadline.
+    @staticmethod
+    def sdo_exchanges(payload_len: int) -> int:
+        """Worst-case mailbox exchanges for a transfer of ``payload_len`` bytes (smallest mailbox)."""
+        if payload_len <= 4:
+            return 1  # expedited
+        rest = max(0, payload_len - SDO_FIRST_FRAME_BYTES)
+        return 1 + -(-rest // SDO_SEGMENT_BYTES)
 
-        SOEM applies the timeout to each mailbox exchange, and a segmented download has
-        one exchange per segment, so a longer payload gets a proportionally shorter one.
-        """
+    @staticmethod
+    def sdo_exchange_timeout_s(remaining_s: float, payload_len: int) -> float | None:
+        """Timeout per exchange that keeps the whole transfer inside ``remaining_s``, or None if impossible."""
+        exchanges = PysoemBackend.sdo_exchanges(payload_len)
+        budget = remaining_s - SDO_MARGIN_S - exchanges * SDO_EXCHANGE_OVERHEAD_S
+        per_exchange = min(DEFAULT_SDO_TIMEOUT_US / 1_000_000, budget / exchanges)
+        return per_exchange if per_exchange >= MIN_SDO_EXCHANGE_TIMEOUT_S else None
+
+    @contextmanager
+    def _sdo_timeouts(self, timeout_s: float | None) -> Iterator[None]:
+        """Set SOEM's per-exchange SDO timeouts for one transfer, and restore the defaults after it."""
         master = self._master
-        remaining = token.remaining()
-        if remaining is None:
+        if timeout_s is None:
             yield
             return
-        exchanges = 1 + payload_len // 64  # conservative: mailboxes are rarely smaller than 80 bytes
-        timeout_us = int(min(DEFAULT_SDO_TIMEOUT_US, max(remaining - 0.05, 0.0) * 1_000_000 / exchanges))
-        master.sdo_read_timeout = master.sdo_write_timeout = max(timeout_us, 1000)
+        master.sdo_read_timeout = master.sdo_write_timeout = int(timeout_s * 1_000_000)
         try:
             yield
         finally:
             master.sdo_read_timeout = master.sdo_write_timeout = DEFAULT_SDO_TIMEOUT_US
 
+    def _sdo_budget(self, token: CallToken, payload_len: int, action: str) -> float | None:
+        """Per-exchange timeout for this transfer, or raise (nothing sent) if the deadline cannot fit it."""
+        remaining = token.remaining()
+        if remaining is None:
+            return None
+        timeout_s = self.sdo_exchange_timeout_s(remaining, payload_len)
+        if timeout_s is None:
+            exchanges = self.sdo_exchanges(payload_len)
+            raise EthercatMasterError(
+                f"Not sent: an SDO {action} of {payload_len} byte(s) can take up to {exchanges} mailbox exchanges, "
+                f"which do not fit in the {max(remaining, 0):.2f} s left of the call's deadline. "
+                "It will not be sent later."
+            )
+        return timeout_s
+
     def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes:
         token = _token(token)
         with locked(self._lock, token):
             slave = self._require_slave(position)
-            remaining = token.remaining()
-            if remaining is not None and remaining < MIN_LEFT_FOR_SDO_S:
-                raise EthercatMasterError("Too little of the call's deadline is left for an SDO upload")
+            timeout_s = self._sdo_budget(token, SDO_UPLOAD_BUDGET_BYTES, "upload")
             try:
-                with self._sdo_timeouts(token):
+                with self._sdo_timeouts(timeout_s):
                     raw = slave.sdo_read(index, subindex, release_gil=True)
             except Exception as exc:
                 raise EthercatMasterError(self._sdo_error("read", position, index, subindex, exc)) from exc
@@ -882,9 +913,10 @@ class PysoemBackend:
         with locked(self._lock, token):
             slave = self._require_slave(position)
             payload = bytes(data)
-            token.begin_send(MIN_LEFT_FOR_SDO_S)  # send point: the download goes out now
+            timeout_s = self._sdo_budget(token, len(payload), "download")  # refuses before sending if too late
+            token.begin_send()  # send point: the download goes out now
             try:
-                with self._sdo_timeouts(token, len(payload)):
+                with self._sdo_timeouts(timeout_s):
                     slave.sdo_write(index, subindex, payload, release_gil=True)
             except Exception as exc:
                 message = self._sdo_error("write", position, index, subindex, exc)

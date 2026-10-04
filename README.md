@@ -334,9 +334,13 @@ strings such as `"0x10"`:
   point ends `not_sent` and is never sent afterwards, even if it was queued
   behind another call; one that had is `unknown`. A read ends with an error.
   SOEM cannot interrupt `config_init` or `config_map`, so they only start with
-  at least 10 s of the deadline left, and the SDO timeouts are clamped to the
-  time left (split across the segments of a longer download), so a transfer
-  does not outlive its call.
+  at least 10 s of the deadline left. An SDO transfer is budgeted for the
+  worst case, because PySOEM does not report the slave's mailbox size: the
+  smallest mailbox (16 data bytes in the first frame, 23 in each further
+  segment), plus SOEM's fixed waits of up to 26 ms per exchange. SOEM's
+  per-exchange timeout is set so that the whole transfer fits in the time
+  left; if it cannot (at least 20 ms per exchange), the download is refused
+  as `not_sent` before anything is sent.
   On disconnect, new calls are refused, and the master is still closed (INIT
   requested if process data ran). Shutdown is bounded the same way.
 - **Watchdog.** When the image is mapped, the process-data watchdog of every
