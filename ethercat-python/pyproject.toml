@@ -6,28 +6,40 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
+# Floors are the lowest versions the test suite passes with (CI's lowest-direct job).
+# mcp is capped below 2: server.py relies on FastMCP internals (tests/test_mcp_internals.py).
 dependencies = [
-    "anyio>=4.0.0",
-    "mcp[cli]>=1.6.0",
-    "pydantic>=2.6.0",
+    "anyio>=4.7.0",
+    "mcp[cli]>=1.22.0,<2",
+    "pydantic>=2.11.0",
     "python-dotenv>=1.1.0",
-    "pysoem>=1.1.4",
-    "lxml>=4.9.0",
+    "pysoem>=1.1.12",
+    "lxml>=4.9.3",
 ]
 
 [project.urls]
 Repository = "https://github.com/IndustriAgents/EtherCAT-MCP"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.2.0",
-    "pytest-asyncio>=0.23.0",
-    "ruff>=0.6.0",
-]
-
 [project.scripts]
 ethercat-mcp = "ethercat_mcp.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.16.0",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

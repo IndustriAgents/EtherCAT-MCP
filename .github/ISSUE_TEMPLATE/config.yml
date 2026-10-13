@@ -1,14 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  # Questions go to the suite-wide IndustriConnect discussions, which are
-  # already enabled. Point this at this repository's own Discussions once
-  # they are turned on (Settings > General > Features).
   - name: Question or usage help
-    url: https://github.com/IndustriAgents/IndustriConnect/discussions
-    about: Ask in the IndustriConnect discussions about configuration, MCP clients, or connecting to your own EtherCAT network.
+    url: https://github.com/IndustriAgents/EtherCAT-MCP/discussions
+    about: Ask about configuration, MCP clients, or connecting to your own EtherCAT network.
   - name: Model Context Protocol docs
     url: https://modelcontextprotocol.io
     about: Reference for MCP itself — transports, clients, and the tool interface.
   - name: Security vulnerability
-    url: https://github.com/IndustriAgents/EtherCAT-MCP/security/policy
+    url: https://github.com/IndustriAgents/EtherCAT-MCP/security/advisories/new
     about: Report privately. Please do not open a public issue.

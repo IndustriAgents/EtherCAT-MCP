@@ -23,7 +23,9 @@
 ## Checklist
 
 - [ ] Tools still return the shared `{ success, data, error, meta }` envelope.
-- [ ] The CI checks pass locally (see [CONTRIBUTING.md](https://github.com/IndustriAgents/EtherCAT-MCP/blob/main/CONTRIBUTING.md#checks)).
+- [ ] The CI checks pass locally: ruff and pytest in both projects (see [CONTRIBUTING.md](https://github.com/IndustriAgents/EtherCAT-MCP/blob/main/CONTRIBUTING.md#checks)).
+- [ ] New or changed tools work against the mock (`ETHERCAT_BACKEND=mock`) and are covered by tests.
+- [ ] Nothing reports `success: true` for an operation the bus (or the mock) did not confirm.
 - [ ] If I changed dependencies, I ran `uv lock` and committed the updated `uv.lock`.
 - [ ] I said below what I tested against: no hardware, the mock, or a bench (never production equipment).
 - [ ] `stdout` is still clean — all logging goes to `stderr`.
