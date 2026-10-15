@@ -27,3 +27,19 @@ Python implementation.
 
 Local verification results and artifact hashes are recorded in
 [release-verification.md](release-verification.md).
+
+## Retry an existing release after configuring registry access
+
+An explicit manual release run checks out the existing immutable tag, validates
+its version, rebuilds and tests it, then publishes the resulting artifacts. It
+uses the current workflow so publication-only fixes do not require moving a tag:
+
+```sh
+gh workflow run release.yml --ref main -f release_tag=v0.3.0
+```
+
+A manual run without `release_tag` still builds without publishing. If either
+registry already contains 0.3.0, rerun only the failed publishing job from the
+appropriate run instead of requesting a new full publication. For npm's first
+publication, an authenticated maintainer may need to publish the verified
+`./npm/*.tgz` artifact before configuring trusted publishing.
