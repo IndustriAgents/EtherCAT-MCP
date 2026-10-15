@@ -18,20 +18,17 @@ from ethercat_mcp.ec_master import EthercatMaster, PysoemBackend
 from ethercat_mcp.server import EthercatMCPServer
 
 EXPECTED_TOOLS = {
-    "get_master_status",
-    "get_slave_info",
-    "list_slaves",
-    "load_esi_file",
     "ping",
-    "read_pdo",
-    "read_sdo",
-    "read_slave_by_alias",
     "scan_network",
-    "set_slave_state",
+    "read_pdo",
+    "get_slave_info",
+    "load_esi_file",
+    "write_sdo",
+    "read_sdo",
+    "list_slaves",
     "test_slave_communication",
     "write_pdo",
-    "write_sdo",
-    "write_slave_by_alias",
+    "set_slave_state",
 }
 
 
@@ -70,7 +67,7 @@ async def test_every_tool_is_listed_with_a_description(server: EthercatMCPServer
 
 
 def test_server_version_is_the_package_version(server: EthercatMCPServer) -> None:
-    assert server.mcp._mcp_server.version == __version__ == version("ethercat-mcp")
+    assert server.mcp._mcp_server.version == __version__ == version("industriagents-ethercat-mcp")
 
 
 @pytest.mark.anyio
@@ -354,7 +351,7 @@ async def test_esi_parsing_runs_off_the_event_loop_with_a_deadline(
 ) -> None:
     import time as time_module
 
-    from ethercat_mcp import tools
+    from ethercat_mcp.application import metadata as tools
 
     monkeypatch.setattr(tools, "ESI_DEADLINE_S", 0.3)
     monkeypatch.setattr(server.esi_parser, "select", lambda *args: time_module.sleep(3))

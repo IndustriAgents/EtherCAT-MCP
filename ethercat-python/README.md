@@ -1,3 +1,10 @@
+> **0.3.0 package and tool migration:** Install `industriagents-ethercat-mcp`
+> from npm (requires uv) or PyPI; the command remains `ethercat-mcp`.
+> The advertised catalog now contains **11 tools**. Older tool names in
+> the examples below remain compatibility calls. See the
+> [architecture and canonical tool guide](../docs/architecture.md)
+> and [release guide](../docs/release.md).
+
 # ethercat-python
 
 Python MCP server for EtherCAT using [PySOEM](https://pysoem.readthedocs.io/). It exposes the `ethercat-mcp` CLI so MCP-compatible clients can scan the bus, read slave states, read and write CoE objects (SDOs), exchange process data (PDOs), request state changes and parse ESI files. Writes and state changes are off by default. Every tool returns a `{ success, data, error, meta }` envelope, invalid arguments included, and `meta.backend` says whether a real bus (`pysoem`) or the mock slave (`mock`) answered. The PySOEM paths are unit-tested against a fake `pysoem` and have not been verified on hardware yet; see [Known limitations](../README.md#known-limitations).

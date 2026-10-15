@@ -1,0 +1,1 @@
+"""Protocol boundary for ethercat."""

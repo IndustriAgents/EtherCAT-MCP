@@ -1,0 +1,1217 @@
+{
+  "schemaVersion": 1,
+  "protocol": "ethercat",
+  "transport": "stdio",
+  "tools": [
+    {
+      "name": "read_pdo",
+      "description": "Select one target mode and provide only its parameters.\n\naddress: Read input process data (TxPDO) bytes of one slave from the cyclic process image.\n\n        Inputs only exist once the process image is mapped and are only valid while the\n        slave is in SAFEOP or OP (use set_slave_state first). Errors otherwise, and also\n        when the last frame's working counter shows that it was lost or (with every\n        process-data slave in SAFEOP/OP) that a slave did not process it. For a slave\n        with fewer than 8 input bits, only its own bits are returned, shifted to bit 0\n        (meta.bit_packed).\n\n        Args:\n            slave_position: 0-based position on the bus.\n            offset: First byte within the slave's input image (default 0).\n            length: Number of bytes (default: to the end of the slave's input image).\n        \n\nalias: Read input process data for an alias from SLAVE_MAP_FILE (same rules as read_pdo).\n\n        Args:\n            alias: Alias name from SLAVE_MAP_FILE.\n            length: Number of bytes. Default: the alias's length, else to the end of the input image.\n        ",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slave_position": {
+            "title": "Slave Position",
+            "type": "integer",
+            "description": "slave position for the selected operation; see its mode description."
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer",
+            "description": "offset for the selected operation; see its mode description."
+          },
+          "length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Length",
+            "description": "length for the selected operation; see its mode description."
+          },
+          "target": {
+            "anyOf": [
+              {
+                "const": "address",
+                "type": "string"
+              },
+              {
+                "const": "alias",
+                "type": "string"
+              }
+            ],
+            "description": "Select the target mode described above."
+          },
+          "alias": {
+            "title": "Alias",
+            "type": "string",
+            "description": "alias for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "oneOf": [
+          {
+            "properties": {
+              "slave_position": {
+                "title": "Slave Position",
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "title": "Offset",
+                "type": "integer"
+              },
+              "length": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Length"
+              },
+              "target": {
+                "const": "address",
+                "type": "string"
+              }
+            },
+            "required": [
+              "slave_position",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          {
+            "properties": {
+              "alias": {
+                "title": "Alias",
+                "type": "string"
+              },
+              "length": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Length"
+              },
+              "target": {
+                "const": "alias",
+                "type": "string"
+              }
+            },
+            "required": [
+              "alias",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "write_pdo",
+      "description": "Select one target mode and provide only its parameters.\n\naddress: Write output process data (RxPDO) bytes of one slave into the cyclic process image.\n\n        Needs ETHERCAT_WRITES_ENABLED=true (off by default). The slave must be in OP,\n        because outputs are not applied in any other state. The bytes stay in the image\n        and go out with every cycle; the request is never repeated. success means they\n        went out and were confirmed: by the full expected working counter when every\n        process-data slave is in OP (meta.verified \"expected_wkc\"), otherwise by the\n        target still being in OP without error (meta.verified \"slave_state\"). If that\n        cannot be confirmed, meta.outcome is \"unknown\": read back before retrying.\n        Refused for slaves whose outputs are bit-packed into a byte shared with others.\n\n        Args:\n            slave_position: 0-based position on the bus.\n            offset: First byte within the slave's output image.\n            data: Byte values 0-255 to write starting at offset.\n        \n\nalias: Write output process data for an alias from SLAVE_MAP_FILE (same rules and gate as write_pdo).\n\n        Args:\n            alias: Alias name from SLAVE_MAP_FILE.\n            data: Byte values 0-255 to write at the alias's offset.\n        ",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slave_position": {
+            "title": "Slave Position",
+            "type": "integer",
+            "description": "slave position for the selected operation; see its mode description."
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer",
+            "description": "offset for the selected operation; see its mode description."
+          },
+          "data": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Data",
+            "type": "array",
+            "description": "data for the selected operation; see its mode description."
+          },
+          "target": {
+            "anyOf": [
+              {
+                "const": "address",
+                "type": "string"
+              },
+              {
+                "const": "alias",
+                "type": "string"
+              }
+            ],
+            "description": "Select the target mode described above."
+          },
+          "alias": {
+            "title": "Alias",
+            "type": "string",
+            "description": "alias for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "oneOf": [
+          {
+            "properties": {
+              "slave_position": {
+                "title": "Slave Position",
+                "type": "integer"
+              },
+              "offset": {
+                "title": "Offset",
+                "type": "integer"
+              },
+              "data": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Data",
+                "type": "array"
+              },
+              "target": {
+                "const": "address",
+                "type": "string"
+              }
+            },
+            "required": [
+              "slave_position",
+              "offset",
+              "data",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          {
+            "properties": {
+              "alias": {
+                "title": "Alias",
+                "type": "string"
+              },
+              "data": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Data",
+                "type": "array"
+              },
+              "target": {
+                "const": "alias",
+                "type": "string"
+              }
+            },
+            "required": [
+              "alias",
+              "data",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "scan_network",
+      "description": "Enumerate the slaves on the bus (PySOEM config_init) and return their identity and state.\n\n        Not passive: SOEM resets every slave on the segment to INIT and then requests\n        PRE-OP while it enumerates. Before that, one broadcast read checks the segment:\n        if any slave is in SAFEOP or OP (another master may be running it), the scan is\n        refused unless both ETHERCAT_WRITES_ENABLED and ETHERCAT_STATE_CHANGE_ENABLED are\n        true. A rescan is always refused while a slave this server brought up is in\n        SAFEOP or OP.\n        Returns position, name, vendor ID, product code, revision, AL state and the\n        process-data sizes (null on a real bus until the process image is mapped);\n        meta.segment_state_before and meta.reset_live_segment say what the scan reset.\n        ",
+      "inputSchema": {
+        "properties": {},
+        "title": "scan_networkArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_slave_info",
+      "description": "Return one slave from the last scan, with its AL state read fresh from the bus.\n\n        Args:\n            slave_position: 0-based position on the bus, as reported by scan_network.\n        ",
+      "inputSchema": {
+        "properties": {
+          "slave_position": {
+            "title": "Slave Position",
+            "type": "integer",
+            "description": "slave position for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "slave_position"
+        ],
+        "title": "get_slave_infoArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "test_slave_communication",
+      "description": "Check that a slave answers: read its AL state, then try a CoE read of object 0x1000.\n\n        success is false if the slave does not answer the state read. A slave without\n        a mailbox (CoE) still passes; data.coe says whether the SDO read worked.\n\n        Args:\n            slave_position: 0-based position on the bus.\n        ",
+      "inputSchema": {
+        "properties": {
+          "slave_position": {
+            "title": "Slave Position",
+            "type": "integer",
+            "description": "slave position for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "slave_position"
+        ],
+        "title": "test_slave_communicationArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_sdo",
+      "description": "Read a CoE object (SDO upload) from a slave's object dictionary.\n\n        The slave must have a mailbox and be in PREOP, SAFEOP or OP.\n\n        Args:\n            slave_position: 0-based position on the bus.\n            index: Object index, e.g. \"0x1018\" (hex needs the 0x prefix; \"1018\" is decimal).\n            subindex: Subindex 0-255 (default 0).\n            data_type: How to decode the bytes: BOOL, INT8, UINT8, INT16, UINT16, INT32, UINT32,\n                INT64, UINT64, REAL32, REAL64, STRING or BYTES (IEC names such as UDINT also work).\n                Without it, 1/2/4/8-byte values are decoded as unsigned integers.\n        ",
+      "inputSchema": {
+        "properties": {
+          "slave_position": {
+            "title": "Slave Position",
+            "type": "integer",
+            "description": "slave position for the selected operation; see its mode description."
+          },
+          "index": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Index",
+            "description": "index for the selected operation; see its mode description."
+          },
+          "subindex": {
+            "default": 0,
+            "title": "Subindex",
+            "type": "integer",
+            "description": "subindex for the selected operation; see its mode description."
+          },
+          "data_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data Type",
+            "description": "data type for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "slave_position",
+          "index"
+        ],
+        "title": "read_sdoArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "write_sdo",
+      "description": "Write a CoE object (SDO download) in a slave's object dictionary.\n\n        Needs ETHERCAT_WRITES_ENABLED=true (off by default). success means the slave\n        acknowledged the download. The download is never repeated: if the answer is\n        lost, meta.outcome is \"unknown\" (read back before retrying); an SDO abort is\n        \"rejected\".\n\n        Args:\n            slave_position: 0-based position on the bus.\n            index: Object index, e.g. \"0x8000\".\n            subindex: Subindex 0-255.\n            value: The value to write. A number, true/false, a string, or a list of byte values.\n            data_type: Encoding of value: BOOL, INT8, UINT8, INT16, UINT16, INT32, UINT32, INT64,\n                UINT64, REAL32, REAL64, STRING or BYTES. Required unless value is a list of bytes.\n        ",
+      "inputSchema": {
+        "properties": {
+          "slave_position": {
+            "title": "Slave Position",
+            "type": "integer",
+            "description": "slave position for the selected operation; see its mode description."
+          },
+          "index": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Index",
+            "description": "index for the selected operation; see its mode description."
+          },
+          "subindex": {
+            "title": "Subindex",
+            "type": "integer",
+            "description": "subindex for the selected operation; see its mode description."
+          },
+          "value": {
+            "title": "Value",
+            "description": "value for the selected operation; see its mode description."
+          },
+          "data_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data Type",
+            "description": "data type for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "slave_position",
+          "index",
+          "subindex",
+          "value"
+        ],
+        "title": "write_sdoArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "set_slave_state",
+      "description": "Request an AL state for one slave and wait until it is reached or ETHERCAT_TIMEOUT expires.\n\n        Needs both ETHERCAT_WRITES_ENABLED=true and ETHERCAT_STATE_CHANGE_ENABLED=true\n        (both off by default). On a real bus, the first request for SAFEOP or OP maps the\n        process image (zeroed) and starts the cyclic process-data exchange. A slave's\n        outputs are zeroed in the image before it enters OP and whenever it ends up\n        outside OP, so stale outputs are never re-applied. A pending AL error on the\n        slave is acknowledged. Follow the EtherCAT state machine: INIT -> PREOP ->\n        SAFEOP -> OP. success means the slave reports the requested state; a refusal is\n        meta.outcome \"rejected\", a timeout \"unknown\".\n\n        Args:\n            slave_position: 0-based position on the bus.\n            state: INIT, PREOP, SAFEOP or OP.\n        ",
+      "inputSchema": {
+        "properties": {
+          "slave_position": {
+            "title": "Slave Position",
+            "type": "integer",
+            "description": "slave position for the selected operation; see its mode description."
+          },
+          "state": {
+            "title": "State",
+            "type": "string",
+            "description": "state for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "slave_position",
+          "state"
+        ],
+        "title": "set_slave_stateArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_slaves",
+      "description": "List the slave aliases defined in SLAVE_MAP_FILE (no bus access).\n\n        Each entry has alias, position, offset, length and description. Entries that\n        cannot be used carry an error.\n        ",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_slavesArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "load_esi_file",
+      "description": "Parse an ESI (EtherCAT Slave Information) XML file (no bus access).\n\n        Returns the vendor and, for a single matching device, its object dictionary\n        (index, name, type, subindexes) and Tx/Rx PDO mappings. When several devices\n        match, returns a summary list instead.\n\n        Args:\n            filepath: Path to the file, or a file name inside ETHERCAT_ESI_PATH.\n            device_type: Device type to pick, e.g. \"EL1008\".\n            revision: Revision to pick, e.g. \"0x00120000\".\n        ",
+      "inputSchema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string",
+            "description": "filepath for the selected operation; see its mode description."
+          },
+          "device_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Device Type",
+            "description": "device type for the selected operation; see its mode description."
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision",
+            "description": "revision for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "filepath"
+        ],
+        "title": "load_esi_fileArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ping",
+      "description": "Report the server version, backend, gates and slave-map status (no bus access).",
+      "inputSchema": {
+        "properties": {},
+        "title": "pingArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "routes": {
+    "read_pdo": {
+      "selector": "target",
+      "options": {
+        "address": "read_pdo",
+        "alias": "read_slave_by_alias"
+      },
+      "legacyHandler": "read_pdo"
+    },
+    "write_pdo": {
+      "selector": "target",
+      "options": {
+        "address": "write_pdo",
+        "alias": "write_slave_by_alias"
+      },
+      "legacyHandler": "write_pdo"
+    },
+    "scan_network": {
+      "handler": "scan_network"
+    },
+    "get_slave_info": {
+      "handler": "get_slave_info"
+    },
+    "test_slave_communication": {
+      "handler": "test_slave_communication"
+    },
+    "read_sdo": {
+      "handler": "read_sdo"
+    },
+    "write_sdo": {
+      "handler": "write_sdo"
+    },
+    "set_slave_state": {
+      "handler": "set_slave_state"
+    },
+    "list_slaves": {
+      "handler": "list_slaves"
+    },
+    "load_esi_file": {
+      "handler": "load_esi_file"
+    },
+    "ping": {
+      "handler": "ping"
+    }
+  },
+  "legacy": {
+    "read_pdo": "read_pdo",
+    "read_slave_by_alias": "read_pdo",
+    "write_pdo": "write_pdo",
+    "write_slave_by_alias": "write_pdo",
+    "scan_network": "scan_network",
+    "get_slave_info": "get_slave_info",
+    "test_slave_communication": "test_slave_communication",
+    "read_sdo": "read_sdo",
+    "write_sdo": "write_sdo",
+    "set_slave_state": "set_slave_state",
+    "list_slaves": "list_slaves",
+    "load_esi_file": "load_esi_file",
+    "ping": "ping",
+    "get_master_status": "ping"
+  },
+  "legacySchemas": {
+    "scan_network": {
+      "properties": {},
+      "title": "scan_networkArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "get_slave_info": {
+      "properties": {
+        "slave_position": {
+          "title": "Slave Position",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "slave_position"
+      ],
+      "title": "get_slave_infoArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "test_slave_communication": {
+      "properties": {
+        "slave_position": {
+          "title": "Slave Position",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "slave_position"
+      ],
+      "title": "test_slave_communicationArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "read_pdo": {
+      "properties": {
+        "slave_position": {
+          "title": "Slave Position",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length"
+        }
+      },
+      "required": [
+        "slave_position"
+      ],
+      "title": "read_pdoArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "write_pdo": {
+      "properties": {
+        "slave_position": {
+          "title": "Slave Position",
+          "type": "integer"
+        },
+        "offset": {
+          "title": "Offset",
+          "type": "integer"
+        },
+        "data": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Data",
+          "type": "array"
+        }
+      },
+      "required": [
+        "slave_position",
+        "offset",
+        "data"
+      ],
+      "title": "write_pdoArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "read_sdo": {
+      "properties": {
+        "slave_position": {
+          "title": "Slave Position",
+          "type": "integer"
+        },
+        "index": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Index"
+        },
+        "subindex": {
+          "default": 0,
+          "title": "Subindex",
+          "type": "integer"
+        },
+        "data_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Type"
+        }
+      },
+      "required": [
+        "slave_position",
+        "index"
+      ],
+      "title": "read_sdoArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "write_sdo": {
+      "properties": {
+        "slave_position": {
+          "title": "Slave Position",
+          "type": "integer"
+        },
+        "index": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Index"
+        },
+        "subindex": {
+          "title": "Subindex",
+          "type": "integer"
+        },
+        "value": {
+          "title": "Value"
+        },
+        "data_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Type"
+        }
+      },
+      "required": [
+        "slave_position",
+        "index",
+        "subindex",
+        "value"
+      ],
+      "title": "write_sdoArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "set_slave_state": {
+      "properties": {
+        "slave_position": {
+          "title": "Slave Position",
+          "type": "integer"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slave_position",
+        "state"
+      ],
+      "title": "set_slave_stateArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "list_slaves": {
+      "properties": {},
+      "title": "list_slavesArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "read_slave_by_alias": {
+      "properties": {
+        "alias": {
+          "title": "Alias",
+          "type": "string"
+        },
+        "length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length"
+        }
+      },
+      "required": [
+        "alias"
+      ],
+      "title": "read_slave_by_aliasArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "write_slave_by_alias": {
+      "properties": {
+        "alias": {
+          "title": "Alias",
+          "type": "string"
+        },
+        "data": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Data",
+          "type": "array"
+        }
+      },
+      "required": [
+        "alias",
+        "data"
+      ],
+      "title": "write_slave_by_aliasArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "load_esi_file": {
+      "properties": {
+        "filepath": {
+          "title": "Filepath",
+          "type": "string"
+        },
+        "device_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Type"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        }
+      },
+      "required": [
+        "filepath"
+      ],
+      "title": "load_esi_fileArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ping": {
+      "properties": {},
+      "title": "pingArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "get_master_status": {
+      "properties": {},
+      "title": "get_master_statusArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "resultSchema": {
+    "type": "object",
+    "required": [
+      "success",
+      "data",
+      "error",
+      "meta"
+    ],
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "data": {},
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "meta": {
+        "type": "object"
+      }
+    },
+    "additionalProperties": false
+  },
+  "localStatusTools": [
+    "ping"
+  ]
+}

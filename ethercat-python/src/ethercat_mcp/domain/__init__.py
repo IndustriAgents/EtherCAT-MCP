@@ -1,0 +1,1 @@
+"""Domain boundary for ethercat."""

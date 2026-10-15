@@ -1,6 +1,6 @@
 [project]
-name = "ethercat-mcp"
-version = "0.1.0"
+name = "industriagents-ethercat-mcp"
+version = "0.3.0"
 description = "Model Context Protocol server for EtherCAT (PySOEM + MCP tooling)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,9 +9,12 @@ authors = [{ name = "IndustriAgents" }]
 # Floors are the lowest versions the test suite passes with (CI's lowest-direct job).
 # mcp is capped below 2: server.py relies on FastMCP internals (tests/test_mcp_internals.py).
 dependencies = [
+    "jsonschema>=4.23,<5",
     "anyio>=4.7.0",
+    # Contract wire errors require CallToolResult passthrough (tested on 1.22+).
     "mcp[cli]>=1.22.0,<2",
-    "pydantic>=2.11.0",
+    # The supported MCP 1.x floor uses typing helpers removed in Pydantic 2.13.
+    "pydantic>=2.11.0,<2.13",
     "python-dotenv>=1.1.0",
     "pysoem>=1.1.12",
     "lxml>=4.9.3",
@@ -43,3 +46,6 @@ select = ["E", "F", "W", "I", "B", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ethercat_mcp"]

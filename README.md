@@ -1,3 +1,10 @@
+> **0.3.0 package and tool migration:** Install `industriagents-ethercat-mcp`
+> from npm (requires uv) or PyPI; the command remains `ethercat-mcp`.
+> The advertised catalog now contains **11 tools**. Older tool names in
+> the examples below remain compatibility calls. See the
+> [architecture and canonical tool guide](docs/architecture.md)
+> and [release guide](docs/release.md).
+
 # EtherCAT MCP Server
 
 [![CI](https://github.com/IndustriAgents/EtherCAT-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/IndustriAgents/EtherCAT-MCP/actions/workflows/ci.yml)

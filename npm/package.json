@@ -1,0 +1,31 @@
+{
+  "name": "industriagents-ethercat-mcp",
+  "version": "0.3.0",
+  "description": "Independent EtherCAT MCP server; versioned Python wheel launcher (requires uv).",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "ethercat-mcp": "bin/cli.mjs"
+  },
+  "files": [
+    "bin/",
+    "vendor/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IndustriAgents/EtherCAT-MCP.git",
+    "directory": "npm"
+  },
+  "scripts": {
+    "test": "node --test",
+    "prepack": "python3 ../scripts/prepare_npm.py"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

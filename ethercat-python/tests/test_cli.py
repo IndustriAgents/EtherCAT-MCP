@@ -37,7 +37,7 @@ def test_help_prints_usage_and_exits(tmp_path: Path) -> None:
 def test_version(tmp_path: Path) -> None:
     result = run("--version", cwd=tmp_path)
     assert result.returncode == 0
-    assert result.stdout.strip() == f"ethercat-mcp {version('ethercat-mcp')}"
+    assert result.stdout.strip() == f"ethercat-mcp {version('industriagents-ethercat-mcp')}"
 
 
 def config_and_stderr(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> tuple[dict, str]:

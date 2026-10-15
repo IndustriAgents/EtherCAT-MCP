@@ -62,7 +62,7 @@ async def session(tmp_path: Path, port: int, **env: str) -> AsyncIterator[Client
 
 async def call(client: ClientSession, tool: str, **arguments: Any) -> dict[str, Any]:
     result = await client.call_tool(tool, arguments)
-    assert not result.isError, result
+    assert result.isError is (json.loads(result.content[0].text).get("success") is False), result
     envelope = json.loads(result.content[0].text)
     assert set(envelope) == {"success", "data", "error", "meta"}, envelope
     # Mock answers must never look like a real bus.
@@ -86,7 +86,7 @@ async def test_read_only_server_against_mock(tmp_path: Path, mock_port: int) -> 
     async with session(tmp_path, mock_port) as client:
         init = await client.initialize()
         assert init.serverInfo.name == "EtherCAT MCP Server"
-        assert init.serverInfo.version == version("ethercat-mcp")
+        assert init.serverInfo.version == version("industriagents-ethercat-mcp")
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == EXPECTED_TOOLS
         assert all(t.description for t in tools)

@@ -108,8 +108,8 @@ def test_server_stdout_is_only_json_rpc(tmp_path: Path) -> None:
                 proc.kill()
                 proc.wait()
     assert rest.strip() == ""
-    assert replies[1]["result"]["serverInfo"]["version"] == version("ethercat-mcp")
-    assert len(replies[2]["result"]["tools"]) == 14
+    assert replies[1]["result"]["serverInfo"]["version"] == version("industriagents-ethercat-mcp")
+    assert len(replies[2]["result"]["tools"]) == 11
     envelopes = {
         name: json.loads(replies[n]["result"]["content"][0]["text"])
         for n, (name, _) in enumerate(ALL_TOOL_CALLS, start=3)
@@ -156,7 +156,7 @@ def test_server_starts_without_a_device(tmp_path: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-    assert len(replies[2]["result"]["tools"]) == 14
+    assert len(replies[2]["result"]["tools"]) == 11
     scan = json.loads(replies[3]["result"]["content"][0]["text"])
     assert scan["success"] is False and "not reachable" in scan["error"]
     assert scan["meta"]["backend"] == "mock" and scan["meta"]["simulated"] is True

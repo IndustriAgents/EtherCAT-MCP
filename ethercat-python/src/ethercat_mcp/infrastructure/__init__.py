@@ -1,0 +1,1 @@
+"""Infrastructure boundary for ethercat."""
