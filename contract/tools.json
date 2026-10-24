@@ -1213,5 +1213,10 @@
   },
   "localStatusTools": [
     "ping"
-  ]
+  ],
+  "limits": {
+    "maxNestingDepth": 32,
+    "maxContainerItems": 10000,
+    "maxTotalValues": 50000
+  }
 }

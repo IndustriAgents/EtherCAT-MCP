@@ -13,7 +13,6 @@ from typing import Any, BinaryIO
 
 import anyio
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 from pydantic import ValidationError
 
@@ -87,28 +86,24 @@ class EnvelopeFastMCP(FastMCP):
         return result
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[Any] | dict[str, Any]:
-        try:
-            return await super().call_tool(name, arguments)
-        except ToolError as exc:
-            tool = self._tool_manager.get_tool(name)
-            if tool is None:
-                raise
-            cause = exc.__cause__
-            if isinstance(cause, ValidationError):
+        tool = self._tool_manager.get_tool(name)
+        if tool is not None:
+            try:
+                # Only this phase proves the handler has not run. A ValidationError
+                # raised by a handler or result conversion may follow native I/O.
+                tool.fn_metadata.arg_model.model_validate(tool.fn_metadata.pre_parse_json(arguments))
+            except ValidationError as exc:
                 problems = "; ".join(
-                    f"{'.'.join(str(part) for part in err['loc']) or 'arguments'}: {err['msg']}"
-                    for err in cause.errors()
+                    f"{'.'.join(str(part) for part in item['loc']) or 'arguments'}: {item['msg']}"
+                    for item in exc.errors()
                 )
                 message = f"Invalid arguments for {name}: {problems}"
-            else:
-                logger.exception("Unexpected error in tool %s", name)
-                message = f"Unexpected error in {name}: {cause or exc}"
-            meta = {**self._envelope_meta(), "tool": name}
-            annotations = tool.annotations
-            if annotations is None or not annotations.readOnlyHint:
-                # A device-changing tool that failed here never sent anything.
-                meta.update({"outcome": "not_sent", "request_sent": False})
-            return tool.fn_metadata.convert_result(envelope(False, error=message, meta=meta))
+                meta = {**self._envelope_meta(), "tool": name}
+                annotations = tool.annotations
+                if annotations is None or not annotations.readOnlyHint:
+                    meta.update({"outcome": "not_sent", "request_sent": False})
+                return tool.fn_metadata.convert_result(envelope(False, error=message, meta=meta))
+        return await super().call_tool(name, arguments)
 
 
 def _outcome_of(result: Any) -> str | None:

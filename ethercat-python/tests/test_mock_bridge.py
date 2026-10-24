@@ -101,6 +101,48 @@ def free_port() -> int:
 # -- outcomes (suite rule 1a) ------------------------------------------------------
 
 
+@pytest.mark.parametrize("data", [None, [], {}, {"written_bytes": 0}, {"written_bytes": True}])
+@pytest.mark.parametrize("operation", ["write_pdo", "write_sdo"])
+def test_invalid_or_partial_write_acknowledgement_is_unknown(data, operation):
+    received = []
+
+    def answer(conn):
+        received.append(json.loads(read_line(conn)))
+        conn.sendall(json.dumps({"success": True, "data": data}).encode() + b"\n")
+
+    with peer(answer) as port:
+        backend = scanned(bridge(port))
+        with pytest.raises(EthercatMasterError) as caught:
+            if operation == "write_pdo":
+                backend.write_pdo(2, 0, b"\x01")
+            else:
+                backend.write_sdo(2, 0x2000, 0, b"\x01")
+        assert caught.value.outcome == "unknown" and caught.value.request_sent is True
+    assert len(received) == 1
+
+
+def test_scan_cleanup_failure_cannot_claim_the_scan_was_not_sent(monkeypatch):
+    backend = bridge(1)
+    requests = []
+
+    def request(payload, **kwargs):
+        requests.append(payload["op"])
+        if payload["op"] == "read_state":
+            return [{"position": 0, "state_code": 2}]
+        assert payload["op"] == "scan"
+        return [{"position": 0, "state_code": 2, "output_size": 1}]
+
+    def failed_cleanup(*args):
+        raise EthercatMasterError("cleanup connection failed before sending")
+
+    monkeypatch.setattr(backend, "_request", request)
+    monkeypatch.setattr(backend, "_clear_outputs", failed_cleanup)
+    with pytest.raises(EthercatMasterError) as caught:
+        backend.scan()
+    assert caught.value.outcome == "unknown" and caught.value.request_sent is True
+    assert requests == ["read_state", "scan"]
+
+
 def test_lost_reply_to_a_write_is_unknown() -> None:
     with peer(hang_up) as port:
         backend = scanned(bridge(port))

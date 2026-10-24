@@ -163,7 +163,12 @@ def main(argv: list[str] | None = None) -> None:
     # The lifespan closes the master on a normal exit, and the signal handler on SIGTERM,
     # SIGHUP and SIGINT; both are bounded so that a stuck device call cannot block shutdown.
     try:
-        EthercatMCPServer(config).run(protocol_out)
+        server = EthercatMCPServer(config)
+    except (ValueError, OSError) as exc:
+        print(f"ethercat-mcp: configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    try:
+        server.run(protocol_out)
     except KeyboardInterrupt:
         pass
 

@@ -62,7 +62,9 @@ be mixed; unknown parameters fail before dispatch. Alias/tag modes resolve
 through the existing configured map and preserve its scaling and validation.
 Legacy names remain callable but are omitted from `tools/list`. Names retained
 in both catalogs accept the old address form without the new selector for
-migration. Those legacy forms retain native argument validation and coercion.
+migration. Those legacy forms and direct tools without a mode selector retain native
+argument validation and coercion. Unknown arguments are rejected before native
+validation, including on every compatibility route.
 
 | Legacy name | Advertised replacement |
 |---|---|
@@ -76,6 +78,26 @@ result. Writes preserve `meta.outcome` and `meta.request_sent` from the native
 adapter. A timeout/cancellation after possible dispatch is uncertain, never
 converted to not_sent. There is no new generic retry loop. In particular,
 retrying an unknown control outcome can apply a physical action twice.
+
+## Bounded requests and failure outcomes
+
+The contract declares `limits.maxNestingDepth` (32), `maxContainerItems`
+(10,000), and `maxTotalValues` (50,000). An iterative walk checks these bounds,
+JSON types, finite numbers and valid Unicode before schema validation, policy
+admission or native dispatch. The configured `max_request_bytes` then limits
+serialized arguments, including escaping. These checks bound application work
+after the MCP SDK has decoded a transport frame; they are not a transport-frame
+size limit.
+
+Upfront native signature validation preserves existing coercion and proves a
+refused call was `not_sent`. A handler or result-conversion failure, including a
+Pydantic validation failure, does not prove that: an unexpected control error
+returns `outcome: "unknown"`, `request_sent: null` and a generic MCP error without
+replaying the operation or exposing its payload. Established adapter outcomes
+remain authoritative. Cancellation releases admission and audits an unknown
+outcome when no result was observed. If final audit persistence fails, JSON text
+and structured content both carry `meta.audit_error` without changing the
+observed control outcome.
 
 ## Deployment policy and audit
 
@@ -118,6 +140,12 @@ unknown, not success. Failure to persist a result is logged and marked
 Audit records omit payloads and credentials. Manage file retention externally;
 this append-only log is not a tamper-proof external audit service.
 
+Policy documents are read only from regular files, with a 64 KiB read bound and
+at most 16 JSON nesting levels. Duplicate fields are rejected. The size bound
+still applies if a file grows during the read. Audit destinations must also be
+regular files; devices and pipes are refused before any audit record is written.
+A FIFO cannot block policy loading or audit admission while waiting for a peer.
+
 ## Protocol capability limits
 
 Live EtherCAT uses PySOEM and requires a compatible NIC and operating-system privileges. Network scanning and state transitions can disturb a running bus. PDO and SDO remain separate operations. Fake SDK and mock tests do not establish hardware timing, watchdog behavior or device compatibility.
@@ -146,3 +174,20 @@ consolidated routes, unknown/mixed arguments, legacy-policy bypass, independent
 admission state, durable intent failure and MCP error envelopes. npm tests
 check the bundled version, argument boundaries, exit status and missing-uv
 errors. See [release.md](release.md) for the registry workflow.
+
+## Cross-review follow-up
+
+Control preparation errors remain `not_sent`, while an unclassified error from
+a master port after invocation is `unknown` with `request_sent: null`. The
+blocking-backend facade uses its existing call token to distinguish failures
+before and after its send point, and cancels failed tokens so work cannot
+continue later. Native classified refusals retain their original outcome.
+
+The mock bridge checks the acknowledged byte count for both PDO and SDO writes.
+Missing, non-integer or partial counts are uncertain failures, never successful
+writes. An output-image cleanup failure after a completed scan cannot make the
+whole scan `not_sent`; it reports an unknown outcome without resending.
+
+Invalid or missing deployment policy files are startup configuration errors:
+the CLI exits with status 2, emits a diagnostic on stderr, and leaves stdout
+free for MCP transport.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from importlib.resources import files
 from typing import Any
 
@@ -10,6 +11,9 @@ from jsonschema import Draft202012Validator
 from mcp.types import CallToolResult, TextContent, Tool
 
 from ..application.execution import Execution
+from .request_limits import RequestError, validate_request
+
+log = logging.getLogger(__name__)
 
 
 def envelope_of(result: Any) -> dict[str, Any] | None:
@@ -60,6 +64,10 @@ class ContractBoundary:
 
     async def call_tool(self, name, arguments=None):
         arguments = {} if arguments is None else arguments
+        try:
+            validate_request(arguments, self.execution.policy.max_request_bytes, self.contract["limits"])
+        except RequestError as exc:
+            return self.refusal(name, str(exc), exc.code)
         route = self.contract["routes"].get(name)
         canonical = self.contract["legacy"].get(name, name)
         handler, forwarded = name, arguments
@@ -88,14 +96,10 @@ class ContractBoundary:
             from mcp.server.fastmcp.exceptions import ToolError
 
             raise ToolError(f"Unknown tool: {name}")
-        if not isinstance(arguments, dict):
-            return self.refusal(name, "Arguments must be an object")
-        try:
-            encoded = json.dumps(arguments, allow_nan=False).encode()
-        except (ValueError, TypeError):
-            return self.refusal(name, "Arguments must contain finite JSON values")
-        if len(encoded) > self.execution.policy.max_request_bytes:
-            return self.refusal(name, "Request exceeds max_request_bytes", "resource_limit")
+        # Legacy signatures keep their documented native coercion. Unknown keys
+        # must still fail before SDK models can silently discard a typo.
+        if legacy_call and set(arguments) - set(validator.schema.get("properties", {})):
+            return self.refusal(name, "Unknown argument(s) for legacy tool")
         error = None if legacy_call else next(validator.iter_errors(arguments), None)
         if error is not None or handler is None:
             # Do not echo argument values: they may contain credentials or payloads.
@@ -129,11 +133,29 @@ class ContractBoundary:
         result = None
         try:
             result = await self.original_call(handler, forwarded)
-            return result
+        except Exception:
+            # An arbitrary adapter/SDK failure cannot prove that native dispatch
+            # did not happen. Never encourage a retry by guessing not_sent.
+            log.exception("Unexpected error while executing tool %s", name)
+            meta = {"tool": name, "code": "internal_error"}
+            if write:
+                meta.update(outcome="unknown", request_sent=None)
+            result = as_result(
+                {
+                    "success": False,
+                    "data": None,
+                    "error": "Unexpected error while executing tool",
+                    "meta": meta,
+                }
+            )
         finally:
             # Audit the observed result; never turn an audit failure after sending
             # into a not_sent result, and never repeat an uncertain operation.
-            self.execution.finish(ticket, envelope_of(result))
+            value = envelope_of(result)
+            self.execution.finish(ticket, value)
+        # Audit failures may annotate the result after the handler serialized
+        # its text. Rebuild both views from the same observed envelope.
+        return as_result(value) if value is not None else result
 
     async def wire_call(self, name, arguments=None):
         result = await self.call_tool(name, arguments)

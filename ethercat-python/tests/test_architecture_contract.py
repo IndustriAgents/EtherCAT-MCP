@@ -182,3 +182,175 @@ def test_only_declared_local_status_tools_use_reserved_capacity():
         result = envelope_of(run(b.call_tool(name, args)))
         assert result["success"] is (name in local_names), name
     b.execution.finish(ticket, None)
+
+
+@pytest.mark.parametrize("validation_failure", [False, True])
+def test_unexpected_control_failure_preserves_uncertainty_and_audit(tmp_path, validation_failure):
+    from mcp.types import ToolAnnotations
+
+    from ethercat_mcp.server import EnvelopeFastMCP
+
+    sent = []
+    server = EnvelopeFastMCP("unexpected-test", envelope_meta=lambda: {})
+
+    @server.tool(name="write_slave_by_alias", annotations=ToolAnnotations(readOnlyHint=False))
+    async def broken_control(alias: str, data: list[int]) -> dict:
+        sent.append((alias, data))
+        if validation_failure:
+            from pydantic import BaseModel
+
+            class Reply(BaseModel):
+                count: int
+
+            Reply.model_validate({"count": "private payload must not escape the boundary"})
+        raise RuntimeError("private payload must not escape the boundary")
+
+    audit_path = tmp_path / "audit.jsonl"
+    b = install_contract(server, Policy(audit_path=str(audit_path)))
+    result = run(b.wire_call("write_slave_by_alias", {"alias": "output", "data": [1]}))
+    assert sent == [("output", [1])]
+    assert result.isError is True
+    value = result.structuredContent
+    assert value["success"] is False
+    assert value["meta"]["outcome"] == "unknown"
+    assert value["meta"]["request_sent"] is None
+    assert value["meta"]["code"] == "internal_error"
+    assert "private payload" not in result.content[0].text
+    assert b.execution.active == b.execution.controls == 0
+    entries = [json.loads(line) for line in audit_path.read_text().splitlines()]
+    assert [entry["phase"] for entry in entries] == ["intent", "result"]
+    assert entries[-1]["outcome"] == "unknown"
+    assert entries[-1]["request_sent"] is None
+
+
+def test_cancellation_releases_admission_and_records_unknown_outcome(tmp_path):
+    b, _ = boundary(Policy(audit_path=str(tmp_path / "audit.jsonl")))
+
+    async def cancelled(name, arguments):
+        raise asyncio.CancelledError()
+
+    b.original_call = cancelled
+    name = next(name for name, tool in b.tools.items() if not tool["annotations"]["readOnlyHint"])
+    args = sample(b.tools[name]["inputSchema"].get("oneOf", [b.tools[name]["inputSchema"]])[0])
+    with pytest.raises(asyncio.CancelledError):
+        run(b.call_tool(name, args))
+    assert b.execution.active == b.execution.controls == 0
+    entries = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert entries[-1]["outcome"] == "unknown"
+
+
+def test_unknown_arguments_rejected_on_direct_routes_and_legacy_aliases():
+    b, calls = boundary()
+    for name, schema in b.contract["legacySchemas"].items():
+        args = sample(schema)
+        args["misspelled_parameter"] = "do not dispatch"
+        value = envelope_of(run(b.call_tool(name, args)))
+        assert value["success"] is False, name
+        assert value["meta"]["code"] == "invalid_arguments", name
+    assert calls == []
+
+
+def test_bounded_requests_refuse_before_dispatch_or_audit(monkeypatch):
+    b, calls = boundary()
+    name = next(n for n, t in b.tools.items() if not t["annotations"].get("readOnlyHint"))
+    schema = b.tools[name]["inputSchema"]
+    base = sample(schema.get("oneOf", [schema])[0])
+    audits = []
+    monkeypatch.setattr(b.execution.audit, "record", lambda *args: audits.append(args))
+    deep = []
+    for _ in range(b.contract["limits"]["maxNestingDepth"] + 1):
+        deep = [deep]
+    cycle = []
+    cycle.append(cycle)
+    oversized = [None] * (b.contract["limits"]["maxContainerItems"] + 1)
+    broad = [[None] * 10000 for _ in range(6)]
+    for payload in [deep, cycle, oversized, broad, "x" * (b.execution.policy.max_request_bytes + 1)]:
+        value = envelope_of(run(b.call_tool(name, {**base, "oversized": payload})))
+        assert value["success"] is False
+        assert value["meta"]["code"] == "resource_limit"
+        assert (value["meta"]["outcome"], value["meta"]["request_sent"]) == ("not_sent", False)
+    assert calls == audits == []
+    assert b.execution.active == b.execution.controls == 0
+
+
+@pytest.mark.parametrize("payload", [float("nan"), float("inf"), object(), {1: "invalid key"}, "\ud800"])
+def test_non_json_arguments_fail_as_envelopes(payload):
+    b, calls = boundary()
+    name = next(iter(b.tools))
+    value = envelope_of(run(b.call_tool(name, {"invalid": payload})))
+    assert value["success"] is False
+    assert value["meta"]["code"] == "invalid_arguments"
+    assert calls == []
+
+
+def test_request_limits_include_exact_escaped_encoding_and_edges():
+    from ethercat_mcp.protocol.request_limits import RequestError, validate_request
+
+    limits = {"maxNestingDepth": 2, "maxContainerItems": 2, "maxTotalValues": 4}
+    validate_request({"a": [1, 2]}, 1024, limits)
+    with pytest.raises(RequestError, match="maxNestingDepth"):
+        validate_request({"a": [[1]]}, 1024, limits)
+    with pytest.raises(RequestError, match="maxContainerItems"):
+        validate_request({"a": [1, 2, 3]}, 1024, limits)
+    with pytest.raises(RequestError, match="max_request_bytes"):
+        validate_request({"a": "\u0000" * 200}, 1024, limits)
+
+
+@pytest.mark.parametrize("text_only", [False, True])
+def test_audit_result_failure_preserves_outcome_and_text_parity(monkeypatch, text_only):
+    b, calls = boundary()
+    name = next(n for n, t in b.tools.items() if not t["annotations"].get("readOnlyHint"))
+    schema = b.tools[name]["inputSchema"]
+    args = sample(schema.get("oneOf", [schema])[0])
+
+    def record(ticket, phase, result):
+        if phase == "result":
+            raise OSError("audit unavailable after send")
+
+    async def written(*args):
+        result = as_result(
+            {"success": True, "data": None, "error": None, "meta": {"outcome": "written", "request_sent": True}}
+        )
+        return result[0] if text_only else result
+
+    b.original_call = written
+    monkeypatch.setattr(b.execution.audit, "record", record)
+    result = run(b.call_tool(name, args))
+    value = envelope_of(result)
+    assert json.loads(result[0][0].text) == value
+    assert value["success"] is True
+    assert value["meta"] == {"outcome": "written", "request_sent": True, "audit_error": True}
+    assert b.execution.active == b.execution.controls == 0
+
+
+def test_application_and_domain_do_not_import_transport_or_native_drivers():
+    import ast
+
+    root = Path(__file__).resolve().parents[1] / "src/ethercat_mcp"
+    forbidden = {"mcp", "pysoem", "serial", "scapy"}
+    for layer in ["application", "domain"]:
+        for path in (root / layer).glob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Import):
+                    imports = [entry.name for entry in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    imports = [node.module or ""]
+                else:
+                    continue
+                assert not any(name.split(".")[0] in forbidden for name in imports), path
+                assert not any("adapters" in name.split(".") or "backends" in name.split(".") for name in imports), path
+
+
+def test_request_bounds_precede_selector_argument_copy():
+    class UncopyableArguments(dict):
+        def items(self):
+            raise AssertionError("Unbounded request was copied before validation")
+
+    b, calls = boundary()
+    name, route = next((name, route) for name, route in b.contract["routes"].items() if "selector" in route)
+    args = UncopyableArguments({str(n): None for n in range(b.contract["limits"]["maxContainerItems"])})
+    args[route["selector"]] = next(iter(route["options"]))
+    result = envelope_of(run(b.call_tool(name, args)))
+    assert result["success"] is False
+    assert result["meta"]["code"] == "resource_limit"
+    assert calls == []

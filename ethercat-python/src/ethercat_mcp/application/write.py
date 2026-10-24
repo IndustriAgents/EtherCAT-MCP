@@ -19,6 +19,9 @@ class WriteOperations:
             position = self._position(slave_position)
             start = parse_int(offset, "offset", minimum=0)
             payload = parse_bytes(data, max_length=MAX_PDO_BYTES)
+        except Exception as exc:
+            return self._not_sent(str(exc), {"slave_position": slave_position})
+        try:
             meta = await self.master.write_pdo(position, start, payload)
         except Exception as exc:
             return self._write_failed(exc, {"slave_position": slave_position})
@@ -43,6 +46,9 @@ class WriteOperations:
             idx = parse_int(index, "index", minimum=0, maximum=65535)
             sub = parse_int(subindex, "subindex", minimum=0, maximum=255)
             payload, dtype = encode_value(value, data_type)
+        except Exception as exc:
+            return self._not_sent(str(exc), {"slave_position": slave_position})
+        try:
             meta = await self.master.write_sdo(position, idx, sub, payload)
         except Exception as exc:
             return self._write_failed(exc, {"slave_position": slave_position})
@@ -72,6 +78,9 @@ class WriteOperations:
         try:
             position = self._position(slave_position)
             desired = parse_state(state)
+        except Exception as exc:
+            return self._not_sent(str(exc), {"slave_position": slave_position, "state": state})
+        try:
             result, meta = await self.master.set_slave_state(position, desired)
         except Exception as exc:
             return self._write_failed(exc, {"slave_position": slave_position, "state": state})

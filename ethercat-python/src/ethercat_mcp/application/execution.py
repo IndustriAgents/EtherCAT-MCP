@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 from ..domain.policy import Policy
 from ..infrastructure.audit import Audit
+from ..infrastructure.policy_file import read_policy_document
 
 log = logging.getLogger(__name__)
 
@@ -39,10 +38,7 @@ class Execution:
         if policy is None:
             filename = os.environ.get(protocol.upper() + "_POLICY_FILE")
             if filename:
-                path = Path(filename)
-                if path.stat().st_size > 65536:
-                    raise ValueError("Policy file exceeds 64 KiB")
-                policy = Policy.from_dict(json.loads(path.read_text()))
+                policy = Policy.from_dict(read_policy_document(filename))
             else:
                 policy = Policy()
         return cls(policy)

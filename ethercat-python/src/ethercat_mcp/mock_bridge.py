@@ -135,6 +135,11 @@ class MockBridgeBackend:
         except (KeyError, TypeError, ValueError):
             raise EthercatMasterError(f"Mock slave at {self.endpoint} sent a reply without a valid {key!r}") from None
 
+    @staticmethod
+    def _check_write_reply(reply: Any, size: int, operation: str) -> None:
+        if not isinstance(reply, dict) or type(reply.get("written_bytes")) is not int or reply["written_bytes"] != size:
+            raise unknown_outcome(f"Mock slave sent an invalid or partial {operation} acknowledgement")
+
     def _require_scanned(self) -> None:
         if not self._scanned:
             raise EthercatMasterError("No bus scan yet: call scan_network first")
@@ -224,8 +229,11 @@ class MockBridgeBackend:
                 raise unknown_outcome("Mock slave sent an unexpected scan reply") from None
             self._scanned = True
             # Like zeroing the image after config_map: start from zero, whatever an earlier run left.
-            for position in range(len(self._slaves)):
-                self._clear_outputs(position, token)
+            try:
+                for position in range(len(self._slaves)):
+                    self._clear_outputs(position, token)
+            except Exception as exc:
+                raise unknown_outcome(f"The bus was scanned, but clearing its output image failed: {exc}") from exc
             return [dict(slave) for slave in self._slaves]
 
     def slave_count(self) -> int:
@@ -261,6 +269,7 @@ class MockBridgeBackend:
                 write=True,
                 token=token,
             )
+        self._check_write_reply(reply, len(data), "write_pdo")
         return {
             "state": reply.get("state"),
             "written_bytes": reply.get("written_bytes"),
@@ -281,11 +290,12 @@ class MockBridgeBackend:
         token = _token(token)
         with locked(self._lock, token):
             self._require_position(position)
-            self._request(
+            reply = self._request(
                 {"op": "write_sdo", "position": position, "index": index, "subindex": subindex, "data_hex": data.hex()},
                 write=True,
                 token=token,
             )
+        self._check_write_reply(reply, len(data), "write_sdo")
 
     def set_state(self, position: int, state: int, token: CallToken | None = None) -> dict[str, Any]:
         token = _token(token)

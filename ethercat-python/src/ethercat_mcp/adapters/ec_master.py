@@ -1110,6 +1110,16 @@ class EthercatMaster:
                 raise unknown_outcome(f"The {what} request did not finish within {deadline:.0f} s") from None
             suffix = "; it was not sent and will not be sent later" if write else ""
             raise EthercatMasterError(f"The {what} request did not finish within {deadline:.0f} s{suffix}") from None
+        except EthercatMasterError:
+            token.cancel("the backend failed")
+            raise  # The backend can distinguish an explicit native refusal.
+        except Exception as exc:
+            sent = token.cancel("the backend failed")
+            if not write:
+                raise
+            if sent:
+                raise unknown_outcome(f"The {what} request failed after dispatch: {exc}") from exc
+            raise EthercatMasterError(f"The {what} request failed before dispatch: {exc}") from exc
         except BaseException:
             token.cancel("the call was cancelled")
             raise

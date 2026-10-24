@@ -30,6 +30,42 @@ from ethercat_mcp.ec_master import OP_STATE, SAFEOP_STATE, EthercatMaster, Ether
 GATES = {"ETHERCAT_WRITES_ENABLED": "true", "ETHERCAT_STATE_CHANGE_ENABLED": "true"}
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("sent", [False, True])
+async def test_unexpected_backend_failure_uses_token_send_evidence(sent):
+    master = EthercatMaster(EthercatConfig.from_env({"ETHERCAT_BACKEND": "mock", **GATES}))
+    tokens = []
+
+    def broken(*, token):
+        tokens.append(token)
+        if sent:
+            token.begin_send()
+        raise ValueError("unexpected native reply")
+
+    with pytest.raises(EthercatMasterError) as caught:
+        await master._run(broken, write=True)
+    assert caught.value.outcome == ("unknown" if sent else "not_sent")
+    assert caught.value.request_sent is sent
+    assert len(tokens) == 1 and tokens[0].cancelled
+    assert not master._pending
+
+
+@pytest.mark.anyio
+async def test_classified_native_failure_preserves_outcome_and_cancels_its_token():
+    master = EthercatMaster(EthercatConfig.from_env({"ETHERCAT_BACKEND": "mock", **GATES}))
+    tokens = []
+
+    def refused(*, token):
+        tokens.append(token)
+        token.begin_send()
+        raise EthercatMasterError("native refusal", outcome="rejected")
+
+    with pytest.raises(EthercatMasterError) as caught:
+        await master._run(refused, write=True)
+    assert caught.value.outcome == "rejected"
+    assert tokens[0].cancelled and not master._pending
+
+
 def master_with_fake(**env: str) -> tuple[EthercatMaster, PysoemBackend, FakePysoem]:
     config = EthercatConfig.from_env({"ETHERCAT_INTERFACE": "fake0", "ETHERCAT_TIMEOUT": "100000", **GATES, **env})
     fake = FakePysoem()

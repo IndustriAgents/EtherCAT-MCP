@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterator
 from importlib.metadata import version
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,6 +31,39 @@ EXPECTED_TOOLS = {
     "write_pdo",
     "set_slave_state",
 }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", ["write_pdo", "write_sdo", "set_slave_state", "scan_network"])
+async def test_unclassified_master_error_after_invocation_is_unknown(name):
+    from ethercat_mcp.application.operations import Operations
+
+    calls = []
+
+    async def broken(*args):
+        calls.append(args)
+        raise ValueError("unexpected master result after dispatch")
+
+    config = EthercatConfig.from_env({"ETHERCAT_WRITES_ENABLED": "true", "ETHERCAT_STATE_CHANGE_ENABLED": "true"})
+    master = SimpleNamespace(
+        describe=lambda: {"backend": "test"},
+        write_pdo=broken,
+        write_sdo=broken,
+        set_slave_state=broken,
+        scan_slaves=broken,
+    )
+    operations = Operations(SimpleNamespace(master=master, config=config), lambda: None)
+    arguments = {
+        "write_pdo": (0, 0, [1]),
+        "write_sdo": (0, "0x2000", 0, 1, "UINT8"),
+        "set_slave_state": (0, "OP"),
+        "scan_network": (),
+    }[name]
+    result = await getattr(operations, name)(*arguments)
+    assert result["success"] is False
+    assert result["meta"]["outcome"] == "unknown"
+    assert result["meta"]["request_sent"] is None
+    assert len(calls) == 1
 
 
 def build(tmp_path: Path, slave_map: Any = None, **env: str) -> tuple[EthercatMCPServer, FakePysoem]:

@@ -190,3 +190,29 @@ def test_bad_configuration_fails_at_startup(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "configuration error: ETHERCAT_WRITES_ENABLED='sometimes' is not a boolean" in result.stderr
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize("policy_content", ['{"read_only": "no"}', None])
+def test_invalid_policy_file_is_a_clean_configuration_error(tmp_path, policy_content):
+    import os
+    import subprocess
+    import sys
+
+    policy = tmp_path / "policy.json"
+    if policy_content is not None:
+        policy.write_text(policy_content)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ETHERCAT_")}
+    env.update({"ETHERCAT_BACKEND": "mock", "ETHERCAT_POLICY_FILE": str(policy)})
+    result = subprocess.run(
+        [sys.executable, "-m", "ethercat_mcp.cli"],
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "configuration error" in result.stderr
+    assert "Traceback" not in result.stderr

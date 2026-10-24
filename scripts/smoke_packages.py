@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 
 repo = Path(__file__).resolve().parents[1]
+package = json.loads((repo / "npm/package.json").read_text())
 stem = (
-    json.loads((repo / "npm/package.json").read_text())["name"]
+    package["name"]
     .removeprefix("industriagents-")
     .removesuffix("-mcp")
 )
@@ -22,7 +23,7 @@ artifact_root = Path(temporary.name)
 shutil.copy2(wheel, artifact_root / wheel.name)
 wheel = artifact_root / wheel.name
 if mode == "npm":
-    tarball = next((repo / "npm").glob("*.tgz"))
+    tarball = repo / "npm" / (package["name"] + "-" + package["version"] + ".tgz")
     subprocess.run(
         [
             "npm",
@@ -131,7 +132,7 @@ try:
         }
     )
     init = response(1)
-    assert init["result"]["serverInfo"]["version"] == "0.3.0", init
+    assert init["result"]["serverInfo"]["version"] == package["version"], init
     send({"jsonrpc": "2.0", "method": "notifications/initialized"})
     send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     tools = response(2)["result"]["tools"]

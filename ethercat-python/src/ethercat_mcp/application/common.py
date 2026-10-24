@@ -31,8 +31,9 @@ class CommonOperations:
 
     def _write_failed(self, exc: Exception, meta: dict[str, Any]) -> dict[str, Any]:
         """Envelope for a device-changing request that failed: say whether it may have been applied."""
-        outcome = getattr(exc, "outcome", NOT_SENT)
-        return self._err(str(exc), {**meta, "outcome": outcome, "request_sent": outcome != NOT_SENT})
+        outcome = getattr(exc, "outcome", "unknown")
+        sent = outcome != NOT_SENT if hasattr(exc, "outcome") else None
+        return self._err(str(exc), {**meta, "outcome": outcome, "request_sent": sent})
 
     def _written(self, meta: dict[str, Any]) -> dict[str, Any]:
         return {**meta, "outcome": meta.get("outcome", WRITTEN), "request_sent": True}

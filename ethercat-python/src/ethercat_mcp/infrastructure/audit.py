@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import time
 from datetime import UTC, datetime
 
@@ -31,9 +32,13 @@ class Audit:
                 request_sent=meta.get("request_sent"),
             )
         data = (json.dumps(entry, separators=(",", ":")) + "\n").encode()
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        # A configured FIFO must not block the MCP event loop while opening.
+        # Validate the opened descriptor as well, closing path-swap races.
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         fd = os.open(self.path, flags, 0o600)
         try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("Audit path must refer to a regular file")
             view = memoryview(data)
             while view:
                 written = os.write(fd, view)
