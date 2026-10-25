@@ -949,7 +949,7 @@
     },
     {
       "name": "read_sdo",
-      "description": "Read a CoE object (SDO upload) from a slave's object dictionary.\n\n        The slave must have a mailbox and be in PREOP, SAFEOP or OP.\n\n        Args:\n            slave_position: 0-based position on the bus.\n            index: Object index, e.g. \"0x1018\" (hex needs the 0x prefix; \"1018\" is decimal).\n            subindex: Subindex 0-255 (default 0).\n            data_type: How to decode the bytes: BOOL, INT8, UINT8, INT16, UINT16, INT32, UINT32,\n                INT64, UINT64, REAL32, REAL64, STRING or BYTES (IEC names such as UDINT also work).\n                Without it, 1/2/4/8-byte values are decoded as unsigned integers.\n         INT64/UINT64 values outside the exact JSON integer range are decimal strings with value_encoding=decimal_string; safe values remain numeric.",
+      "description": "Read a CoE object (SDO upload) from a slave's object dictionary.\n\n        The slave must have a mailbox and be in PREOP, SAFEOP or OP.\n\n        Args:\n            slave_position: 0-based position on the bus.\n            index: Object index, e.g. \"0x1018\" (hex needs the 0x prefix; \"1018\" is decimal).\n            subindex: Subindex 0-255 (default 0).\n            data_type: How to decode the bytes: BOOL, INT8, UINT8, INT16, UINT16, INT32, UINT32,\n                INT64, UINT64, REAL32, REAL64, STRING or BYTES (IEC names such as UDINT also work).\n                Without it, 1/2/4/8-byte values are decoded as unsigned integers.\n         INT64/UINT64 values outside the exact JSON integer range are decimal strings with value_encoding=decimal_string; safe values remain numeric.\nmax_bytes selects a bounded native upload buffer (1-4096, default256). Larger CoE STRING/BYTES objects require an explicitly sufficient buffer and mailbox deadline. An oversized object fails; no prefix or automatic retry is returned.",
       "inputSchema": {
         "properties": {
           "slave_position": {
@@ -987,6 +987,13 @@
             "default": null,
             "title": "Data Type",
             "description": "data type for the selected operation; see its mode description."
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096,
+            "default": 256,
+            "description": "Maximum native SDO upload buffer in bytes; oversize objects fail rather than returning a prefix."
           }
         },
         "required": [
@@ -1118,6 +1125,11 @@
               },
               "simulated": {
                 "type": "boolean"
+              },
+              "max_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096
               }
             },
             "additionalProperties": true,
@@ -2364,6 +2376,13 @@
           ],
           "default": null,
           "title": "Data Type"
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "default": 256,
+          "description": "Maximum native SDO upload buffer in bytes; oversize objects fail rather than returning a prefix."
         }
       },
       "required": [

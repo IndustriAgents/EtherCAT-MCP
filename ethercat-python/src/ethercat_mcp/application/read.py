@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import StrictInt
 
-from ethercat_mcp.codec import decode_value, normalize_data_type, parse_int
+from ethercat_mcp.codec import decode_value, normalize_data_type, parse_int, validate_upload_size
 
 
 class ReadOperations:
@@ -26,7 +26,12 @@ class ReadOperations:
         )
 
     async def read_sdo(
-        self, slave_position: StrictInt, index: str | StrictInt, subindex: StrictInt = 0, data_type: str | None = None
+        self,
+        slave_position: StrictInt,
+        index: str | StrictInt,
+        subindex: StrictInt = 0,
+        data_type: str | None = None,
+        max_bytes: StrictInt = 256,
     ) -> dict[str, Any]:
         """Read a CoE object (SDO upload) from a slave's object dictionary."""
         meta: dict[str, Any] = {"slave_position": slave_position}
@@ -35,7 +40,8 @@ class ReadOperations:
             idx = parse_int(index, "index", minimum=0, maximum=65535)
             sub = parse_int(subindex, "subindex", minimum=0, maximum=255)
             dtype = normalize_data_type(data_type)
-            raw, meta = await self.master.read_sdo(position, idx, sub)
+            limit = validate_upload_size(max_bytes, dtype)
+            raw, meta = await self.master.read_sdo(position, idx, sub, limit)
             decoded = decode_value(raw, dtype)
         except Exception as exc:
             return self._err(str(exc), meta)

@@ -170,6 +170,16 @@ def encode_value(value: Any, data_type: str | None) -> tuple[bytes, str]:
         raise ValueError(f"value {number} does not fit in {dtype}") from None
 
 
+def validate_upload_size(max_bytes: Any, data_type: str | None = None) -> int:
+    """Bound the native CoE upload buffer before any mailbox access."""
+    if type(max_bytes) is not int or not 1 <= max_bytes <= 4096:
+        raise ValueError("max_bytes must be an integer between 1 and 4096")
+    dtype = normalize_data_type(data_type)
+    if dtype in _FIXED and max_bytes < _FIXED[dtype][1]:
+        raise ValueError(f"max_bytes={max_bytes} is too small for {dtype} ({_FIXED[dtype][1]} bytes)")
+    return max_bytes
+
+
 def decode_value(raw: bytes, data_type: str | None) -> dict[str, Any]:
     """Decode an SDO upload. Without a data type, sizes 1/2/4/8 are read as unsigned ints."""
     dtype = normalize_data_type(data_type)

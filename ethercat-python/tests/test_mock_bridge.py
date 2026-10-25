@@ -225,3 +225,19 @@ def test_scan_clears_outputs_an_earlier_run_left_in_the_image(mock_port: int) ->
     backend = bridge(mock_port)  # read-only server: it must still not leave the 0x5A behind
     backend.scan()
     assert raw(mock_port, {"op": "read_outputs", "position": 2})["data"]["raw_data_hex"] == "00"
+
+
+def test_mock_sdo_upload_enforces_buffer_without_truncation_or_retry():
+    payload = bytes(range(256)) * 2
+    requests = []
+
+    def answer(conn):
+        requests.append(json.loads(read_line(conn)))
+        conn.sendall(json.dumps({"success": True, "data": {"data_hex": payload.hex()}}).encode() + b"\n")
+
+    with peer(answer) as port:
+        backend = scanned(bridge(port))
+        assert backend.read_sdo(3, 0x8000, 6, max_bytes=512) == payload
+        with pytest.raises(EthercatMasterError, match="max_bytes"):
+            backend.read_sdo(3, 0x8000, 6, max_bytes=256)
+        assert len(requests) == 2  # one request per call; no larger-buffer retry

@@ -442,3 +442,45 @@ async def test_esi_parsing_runs_off_the_event_loop_with_a_deadline(
     result = await call(server, "load_esi_file", filepath="slow.xml")
     assert result["success"] is False and "did not finish within" in result["error"]
     assert time_module.monotonic() - start < 2.0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("max_bytes,data_type", [(0, "BYTES"), (4097, "STRING"), (3, "UINT32"), (7, "UINT64")])
+async def test_upload_buffer_and_fixed_type_validated_before_access(tmp_path, max_bytes, data_type):
+    srv, _ = build(tmp_path)
+
+    async def never(*_args):
+        pytest.fail("Invalid upload sizing must not access a slave")
+
+    srv.master.read_sdo = never
+    result = await call(srv, "read_sdo", slave_position=0, index="0x2000", data_type=data_type, max_bytes=max_bytes)
+    assert result["success"] is False and "max_bytes" in result["error"]
+
+
+@pytest.mark.anyio
+async def test_large_sdo_mcp_wire_uses_requested_buffer(tmp_path):
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    srv, fake = build(tmp_path)
+    await srv.master.scan_slaves()
+    value = bytes(range(256)) * 2
+    slave = srv.master.backend._slaves[3]
+    slave._dev.objects[(0x8000, 6)][0] = value
+    async with create_connected_server_and_client_session(srv.mcp) as session:
+        result = await session.call_tool(
+            "read_sdo",
+            {
+                "slave_position": 3,
+                "index": "0x8000",
+                "subindex": 6,
+                "data_type": "BYTES",
+                "max_bytes": 512,
+            },
+        )
+    envelope = result.structuredContent
+    assert envelope["success"] is True
+    assert envelope["data"]["value"] == list(value)
+    assert envelope["data"]["raw_hex"] == value.hex()
+    assert envelope["meta"]["max_bytes"] == 512 and envelope["meta"]["complete"] is True
+    assert slave.last_upload_size == 512
+    srv.master.backend.close()

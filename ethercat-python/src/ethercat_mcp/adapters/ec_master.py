@@ -5,7 +5,7 @@ configuration (``ETHERCAT_BACKEND``), enforces the write and state-change gates,
 and runs the blocking backend calls in worker threads.
 
 ``PysoemBackend`` drives a real bus through PySOEM. The calls it makes are the
-ones PySOEM 1.1.12 exposes (``Master.open/config_init/config_map/read_state/
+ones PySOEM 1.1.13 exposes (``Master.open/config_init/config_map/read_state/
 send_processdata/receive_processdata``, ``CdefSlave.sdo_read/sdo_write/
 write_state/state_check`` and the ``input``/``output`` process-image views).
 """
@@ -24,6 +24,7 @@ from typing import Any, Protocol, TypeVar
 
 import anyio
 
+from ..codec import validate_upload_size
 from ..config import EthercatConfig
 from ..domain.errors import _STATE_ALIASES as _STATE_ALIASES
 from ..domain.errors import INIT_STATE as INIT_STATE
@@ -238,7 +239,9 @@ class Backend(Protocol):
 
     def write_pdo(self, position: int, offset: int, data: bytes, token: CallToken | None = None) -> dict[str, Any]: ...
 
-    def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes: ...
+    def read_sdo(
+        self, position: int, index: int, subindex: int, token: CallToken | None = None, *, max_bytes: int = 256
+    ) -> bytes: ...
 
     def write_sdo(
         self, position: int, index: int, subindex: int, data: bytes, token: CallToken | None = None
@@ -896,17 +899,23 @@ class PysoemBackend:
             )
         return timeout_s
 
-    def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes:
+    def read_sdo(
+        self, position: int, index: int, subindex: int, token: CallToken | None = None, *, max_bytes: int = 256
+    ) -> bytes:
+        max_bytes = validate_upload_size(max_bytes)
         token = _token(token)
         with locked(self._lock, token):
             slave = self._require_slave(position)
-            timeout_s = self._sdo_budget(token, SDO_UPLOAD_BUDGET_BYTES, "upload")
+            timeout_s = self._sdo_budget(token, max_bytes, "upload")
             try:
                 with self._sdo_timeouts(timeout_s):
-                    raw = slave.sdo_read(index, subindex, release_gil=True)
+                    raw = slave.sdo_read(index, subindex, size=max_bytes, release_gil=True)
             except Exception as exc:
                 raise EthercatMasterError(self._sdo_error("read", position, index, subindex, exc)) from exc
-            return bytes(raw)
+            result = bytes(raw)
+            if len(result) > max_bytes:
+                raise EthercatMasterError("SDO upload exceeded max_bytes; no partial value is returned")
+            return result
 
     def write_sdo(self, position: int, index: int, subindex: int, data: bytes, token: CallToken | None = None) -> None:
         token = _token(token)
@@ -1165,9 +1174,15 @@ class EthercatMaster:
         meta, ms = await self._run(self.backend.write_pdo, position, offset, data, write=True)
         return {**meta, "duration_ms": ms}
 
-    async def read_sdo(self, position: int, index: int, subindex: int) -> tuple[bytes, dict[str, Any]]:
-        raw, ms = await self._run(self.backend.read_sdo, position, index, subindex)
-        return (raw, {"duration_ms": ms})
+    async def read_sdo(
+        self, position: int, index: int, subindex: int, max_bytes: int = 256
+    ) -> tuple[bytes, dict[str, Any]]:
+        max_bytes = validate_upload_size(max_bytes)
+        reader = self.backend.read_sdo if max_bytes == 256 else partial(self.backend.read_sdo, max_bytes=max_bytes)
+        raw, ms = await self._run(reader, position, index, subindex)
+        if len(raw) > max_bytes:
+            raise EthercatMasterError("SDO upload exceeded max_bytes; no partial value is returned")
+        return (raw, {"duration_ms": ms, "max_bytes": max_bytes, "complete": True})
 
     async def write_sdo(self, position: int, index: int, subindex: int, data: bytes) -> dict[str, Any]:
         self.require_writes()

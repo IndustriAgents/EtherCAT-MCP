@@ -28,7 +28,7 @@ servers (Modbus, S7comm, ...), and every tool returns the suite's
 
 > **Status: early, not yet verified on hardware.** The PySOEM paths (scan, SDO
 > read/write, process image and cyclic exchange, state changes) are written
-> against PySOEM 1.1.12's API and unit-tested against a fake `pysoem` module,
+> against PySOEM 1.1.13's API and unit-tested against a fake `pysoem` module,
 > because CI has no EtherCAT hardware. End-to-end tests drive the real server
 > over stdio against the mock slave. Try it on a bench before anything else,
 > and read [Known limitations](#known-limitations).
@@ -351,7 +351,7 @@ strings such as `"0x10"`:
   smallest mailbox (16 data bytes in the first frame, 23 in each further
   segment), plus SOEM's fixed waits of up to 26 ms per exchange. SOEM's
   per-exchange timeout is set so that the whole transfer fits in the time
-  left; if it cannot (at least 20 ms per exchange), the download is refused
+  left; if it cannot (at least 20 ms per exchange), the upload or download is refused
   as `not_sent` before anything is sent.
   On disconnect, new calls are refused, and the master is still closed (INIT
   requested if process data ran). Shutdown is bounded the same way.
@@ -383,7 +383,7 @@ strings such as `"0x10"`:
 | `test_slave_communication` | Reads the slave's AL state, then tries a CoE read of object 0x1000. `success: false` if the slave does not answer. |
 | `read_pdo` | Input bytes of one slave from the process image (`offset`, `length`). Needs SAFEOP or OP and a working counter that confirms the frame. For a bit-packed slave, only its own bits (see [Known limitations](#known-limitations)). |
 | `write_pdo` | Gated by `ETHERCAT_WRITES_ENABLED`. Writes output bytes into the process image and confirms them by working counter or target state (`meta.verified`, `meta.outcome`). Needs OP. Refused for bit-packed slaves. |
-| `read_sdo` | CoE upload (`index`, `subindex`, optional `data_type` such as `UINT32`, `STRING`). Returns the raw bytes and the decoded value. Needs a mailbox and PREOP or higher. |
+| `read_sdo` | CoE upload (`index`, `subindex`, optional `data_type` such as `UINT32`, `STRING`, and `max_bytes` 1..4096, default 256). Returns the whole object as raw bytes and decoded value; the buffer limit is not a prefix request. Needs a mailbox and PREOP or higher. |
 | `write_sdo` | Gated by `ETHERCAT_WRITES_ENABLED`. CoE download of `value` encoded as `data_type`, sent once. SDO aborts come back with their abort code (`rejected`); a lost answer is `unknown`. |
 | `set_slave_state` | Gated by `ETHERCAT_WRITES_ENABLED` and `ETHERCAT_STATE_CHANGE_ENABLED`. Requests `INIT`, `PREOP`, `SAFEOP` or `OP` for one slave (acknowledging a pending AL error, zeroing its outputs around OP) and waits until it is reached; reports the AL status code if not. |
 | `list_slaves` | Aliases from `SLAVE_MAP_FILE`, with an error per unusable entry. |
@@ -421,7 +421,7 @@ transport (`ETHERCAT_BACKEND=mock`) instead of a network interface.
 
 ## Known limitations
 
-- **Not yet run on hardware.** The PySOEM code paths follow PySOEM 1.1.12's API
+- **Not yet run on hardware.** The PySOEM code paths follow PySOEM 1.1.13's API
   and are tested against a fake `pysoem`, not against real slaves.
 - **Minimal master.** No distributed clocks, no PDO remapping (slaves keep the
   mapping SOEM reads from CoE or SII), no FoE/EoE, no cable redundancy, and no

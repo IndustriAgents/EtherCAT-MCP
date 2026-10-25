@@ -822,3 +822,42 @@ async def test_the_server_survives_a_same_step_cancel_through_the_sdk(
             assert json.loads(ping.content[0].text)["success"] is True
         assert backend._slaves[2].output == b"\x00"  # never staged
         assert fake.device(2).applied_outputs == b"\x00"
+
+
+@pytest.mark.anyio
+async def test_cancelled_large_upload_retains_native_owner_until_return():
+    master, backend, _ = master_with_fake()
+    entered = threading.Event()
+    release = threading.Event()
+    finished = anyio.Event()
+    scopes = []
+    sizes = []
+
+    def blocked_upload(index, subindex, size=0, **kwargs):
+        sizes.append(size)
+        entered.set()
+        assert release.wait(5)
+        return bytes(1024)
+
+    backend._slaves[3].sdo_read = blocked_upload
+
+    async def upload():
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            await master.read_sdo(3, 0x8000, 6, 1024)
+        finished.set()
+
+    try:
+        async with anyio.create_task_group() as group:
+            group.start_soon(upload)
+            with anyio.fail_after(2):
+                while not entered.is_set():
+                    await anyio.sleep(0.001)
+                scopes[0].cancel()
+                await finished.wait()
+            assert backend._lock.acquire(blocking=False) is False
+            assert sizes == [1024]
+            release.set()
+    finally:
+        release.set()
+        await master.close()

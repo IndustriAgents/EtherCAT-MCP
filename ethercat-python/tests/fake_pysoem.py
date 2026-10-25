@@ -1,4 +1,4 @@
-"""In-memory stand-in for the parts of PySOEM 1.1.12 that PysoemBackend uses.
+"""In-memory stand-in for the parts of PySOEM 1.1.13 that PysoemBackend uses.
 
 Real EtherCAT needs raw Ethernet, root and hardware, so the PySOEM code paths
 are tested against this fake. It mirrors PySOEM's names and signatures and the
@@ -274,6 +274,7 @@ class FakeSlave:
 
     def sdo_read(self, index, subindex, size=0, ca=False, *, release_gil=None):
         self.sdo_calls.append(("read", index, subindex, release_gil))
+        self.last_upload_size = size
         self.timeouts_seen.append(self._master.sdo_read_timeout)
         self._mailbox()
         if (index, subindex) not in self._dev.objects:

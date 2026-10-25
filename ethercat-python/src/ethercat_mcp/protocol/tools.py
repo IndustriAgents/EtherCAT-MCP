@@ -92,11 +92,16 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
     @server.tool(annotations=READ_ONLY)
     async def read_sdo(
-        slave_position: StrictInt, index: str | StrictInt, subindex: StrictInt = 0, data_type: str | None = None
+        slave_position: StrictInt,
+        index: str | StrictInt,
+        subindex: StrictInt = 0,
+        data_type: str | None = None,
+        max_bytes: StrictInt = 256,
     ) -> dict[str, Any]:
         """Read a CoE object (SDO upload) from a slave's object dictionary.
 
         The slave must have a mailbox and be in PREOP, SAFEOP or OP.
+        Uploads larger than the selected buffer fail; no partial object or retry is returned.
 
         Args:
             slave_position: 0-based position on the bus.
@@ -105,8 +110,10 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             data_type: How to decode the bytes: BOOL, INT8, UINT8, INT16, UINT16, INT32, UINT32,
                 INT64, UINT64, REAL32, REAL64, STRING or BYTES (IEC names such as UDINT also work).
                 Without it, 1/2/4/8-byte values are decoded as unsigned integers.
+            max_bytes: Native upload buffer size, 1-4096 (default 256). Larger buffers
+                require enough remaining mailbox deadline; this is not a requested prefix.
         """
-        return await operations.read_sdo(slave_position, index, subindex, data_type)
+        return await operations.read_sdo(slave_position, index, subindex, data_type, max_bytes)
 
     @server.tool(annotations=WRITES)
     async def write_sdo(
