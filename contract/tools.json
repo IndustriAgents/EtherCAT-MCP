@@ -141,7 +141,42 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slave_position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "length": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "raw_data_hex": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-fA-F]{2})*$",
+                    "description": "Raw bytes encoded as hexadecimal octets."
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slave_position",
+                  "offset",
+                  "length",
+                  "raw_data_hex"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -149,7 +184,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -279,7 +358,36 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slave_position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "written_bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slave_position",
+                  "offset",
+                  "written_bytes"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -287,7 +395,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -314,7 +466,107 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slaves": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "slave_position": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "position": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "al_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "al_status_code": {
+                          "type": [
+                            "null",
+                            "boolean",
+                            "number",
+                            "string",
+                            "array",
+                            "object"
+                          ],
+                          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                        },
+                        "vendor_id": {
+                          "type": [
+                            "null",
+                            "boolean",
+                            "number",
+                            "string",
+                            "array",
+                            "object"
+                          ],
+                          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                        },
+                        "product_code": {
+                          "type": [
+                            "null",
+                            "boolean",
+                            "number",
+                            "string",
+                            "array",
+                            "object"
+                          ],
+                          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                        },
+                        "revision": {
+                          "type": [
+                            "null",
+                            "boolean",
+                            "number",
+                            "string",
+                            "array",
+                            "object"
+                          ],
+                          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                        },
+                        "input_bytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "output_bytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": true,
+                      "description": "Identity and last observed AL state of a slave; available identity fields depend on the backend."
+                    }
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slaves"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -322,7 +574,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -364,7 +660,95 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slave_position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "al_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "al_status_code": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "vendor_id": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "product_code": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "revision": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "input_bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "output_bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": true,
+                "description": "Identity and last observed AL state of a slave; available identity fields depend on the backend."
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -372,7 +756,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -414,7 +842,48 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slave_position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "responding": {
+                    "type": "boolean"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "device_type": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "sdo_error": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slave_position",
+                  "responding",
+                  "state"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -422,7 +891,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -436,7 +949,7 @@
     },
     {
       "name": "read_sdo",
-      "description": "Read a CoE object (SDO upload) from a slave's object dictionary.\n\n        The slave must have a mailbox and be in PREOP, SAFEOP or OP.\n\n        Args:\n            slave_position: 0-based position on the bus.\n            index: Object index, e.g. \"0x1018\" (hex needs the 0x prefix; \"1018\" is decimal).\n            subindex: Subindex 0-255 (default 0).\n            data_type: How to decode the bytes: BOOL, INT8, UINT8, INT16, UINT16, INT32, UINT32,\n                INT64, UINT64, REAL32, REAL64, STRING or BYTES (IEC names such as UDINT also work).\n                Without it, 1/2/4/8-byte values are decoded as unsigned integers.\n        ",
+      "description": "Read a CoE object (SDO upload) from a slave's object dictionary.\n\n        The slave must have a mailbox and be in PREOP, SAFEOP or OP.\n\n        Args:\n            slave_position: 0-based position on the bus.\n            index: Object index, e.g. \"0x1018\" (hex needs the 0x prefix; \"1018\" is decimal).\n            subindex: Subindex 0-255 (default 0).\n            data_type: How to decode the bytes: BOOL, INT8, UINT8, INT16, UINT16, INT32, UINT32,\n                INT64, UINT64, REAL32, REAL64, STRING or BYTES (IEC names such as UDINT also work).\n                Without it, 1/2/4/8-byte values are decoded as unsigned integers.\n         INT64/UINT64 values outside the exact JSON integer range are decimal strings with value_encoding=decimal_string; safe values remain numeric.",
       "inputSchema": {
         "properties": {
           "slave_position": {
@@ -496,7 +1009,67 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slave_position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "index": {
+                    "type": "string"
+                  },
+                  "subindex": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "data_type": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "value": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "raw_hex": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-fA-F]{2})*$",
+                    "description": "Raw bytes encoded as hexadecimal octets."
+                  },
+                  "byte_length": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "value_encoding": {
+                    "enum": [
+                      "json_number",
+                      "decimal_string"
+                    ]
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slave_position",
+                  "index",
+                  "subindex"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -504,7 +1077,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -583,7 +1200,60 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slave_position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "index": {
+                    "type": "string"
+                  },
+                  "subindex": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "written": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "data_type": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "raw_hex": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-fA-F]{2})*$",
+                    "description": "Raw bytes encoded as hexadecimal octets."
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slave_position",
+                  "index",
+                  "subindex",
+                  "written",
+                  "data_type",
+                  "raw_hex"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -591,7 +1261,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -639,7 +1353,58 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slave_position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "requested": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "state_code": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "al_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "al_status_code": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "process_image_mapped": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slave_position",
+                  "requested",
+                  "state"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -647,7 +1412,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -680,7 +1489,45 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "slaves": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": [
+                          "null",
+                          "boolean",
+                          "number",
+                          "string",
+                          "array",
+                          "object"
+                        ],
+                        "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                      },
+                      "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+                    }
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "slaves",
+                  "count"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -688,7 +1535,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -756,7 +1647,97 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "filepath": {
+                    "type": "string"
+                  },
+                  "vendor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "additionalProperties": true
+                  },
+                  "device_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "matched": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "devices": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "product_code": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "group": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "additionalProperties": true
+                    }
+                  },
+                  "hint": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "filepath",
+                  "vendor",
+                  "device_count",
+                  "matched",
+                  "devices"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -764,7 +1745,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -778,7 +1803,7 @@
     },
     {
       "name": "ping",
-      "description": "Report the server version, backend, gates and slave-map status (no bus access).",
+      "description": "Report the server version, backend, gates and slave-map status (no bus access). Reports static backend capabilities and native configuration gates; does not establish device reachability or permission.",
       "inputSchema": {
         "properties": {},
         "title": "pingArguments",
@@ -797,7 +1822,286 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "capabilities"
+                ],
+                "properties": {
+                  "capabilities": {
+                    "type": "object",
+                    "required": [
+                      "protocol",
+                      "backend",
+                      "simulated",
+                      "scope",
+                      "device_verified",
+                      "operations",
+                      "prerequisites"
+                    ],
+                    "properties": {
+                      "protocol": {
+                        "const": "ethercat"
+                      },
+                      "backend": {
+                        "type": "string"
+                      },
+                      "simulated": {
+                        "type": "boolean"
+                      },
+                      "scope": {
+                        "const": "backend_support"
+                      },
+                      "device_verified": {
+                        "const": false
+                      },
+                      "operations": {
+                        "type": "object",
+                        "required": [
+                          "read_pdo",
+                          "write_pdo",
+                          "scan_network",
+                          "get_slave_info",
+                          "test_slave_communication",
+                          "read_sdo",
+                          "write_sdo",
+                          "set_slave_state",
+                          "list_slaves",
+                          "load_esi_file",
+                          "ping"
+                        ],
+                        "properties": {
+                          "read_pdo": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "write_pdo": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "scan_network": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "get_slave_info": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "test_slave_communication": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "read_sdo": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "write_sdo": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "set_slave_state": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "list_slaves": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "load_esi_file": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "ping": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "prerequisites": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": true
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -805,7 +2109,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -825,7 +2173,8 @@
         "address": "read_pdo",
         "alias": "read_slave_by_alias"
       },
-      "legacyHandler": "read_pdo"
+      "legacyHandler": "read_pdo",
+      "resultShape": "read_pdo"
     },
     "write_pdo": {
       "selector": "target",
@@ -833,34 +2182,44 @@
         "address": "write_pdo",
         "alias": "write_slave_by_alias"
       },
-      "legacyHandler": "write_pdo"
+      "legacyHandler": "write_pdo",
+      "resultShape": "write_pdo"
     },
     "scan_network": {
-      "handler": "scan_network"
+      "handler": "scan_network",
+      "resultShape": "scan_network"
     },
     "get_slave_info": {
-      "handler": "get_slave_info"
+      "handler": "get_slave_info",
+      "resultShape": "get_slave_info"
     },
     "test_slave_communication": {
-      "handler": "test_slave_communication"
+      "handler": "test_slave_communication",
+      "resultShape": "test_slave_communication"
     },
     "read_sdo": {
-      "handler": "read_sdo"
+      "handler": "read_sdo",
+      "resultShape": "read_sdo"
     },
     "write_sdo": {
-      "handler": "write_sdo"
+      "handler": "write_sdo",
+      "resultShape": "write_sdo"
     },
     "set_slave_state": {
-      "handler": "set_slave_state"
+      "handler": "set_slave_state",
+      "resultShape": "set_slave_state"
     },
     "list_slaves": {
-      "handler": "list_slaves"
+      "handler": "list_slaves",
+      "resultShape": "list_slaves"
     },
     "load_esi_file": {
-      "handler": "load_esi_file"
+      "handler": "load_esi_file",
+      "resultShape": "load_esi_file"
     },
     "ping": {
-      "handler": "ping"
+      "handler": "ping",
+      "resultShape": "ping"
     }
   },
   "legacy": {
@@ -1218,5 +2577,805 @@
     "maxNestingDepth": 32,
     "maxContainerItems": 10000,
     "maxTotalValues": 50000
+  },
+  "resultShapes": {
+    "read_pdo": {
+      "type": "object",
+      "properties": {
+        "slave_position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "raw_data_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-fA-F]{2})*$",
+          "description": "Raw bytes encoded as hexadecimal octets."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slave_position",
+        "offset",
+        "length",
+        "raw_data_hex"
+      ]
+    },
+    "write_pdo": {
+      "type": "object",
+      "properties": {
+        "slave_position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "written_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slave_position",
+        "offset",
+        "written_bytes"
+      ]
+    },
+    "scan_network": {
+      "type": "object",
+      "properties": {
+        "slaves": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "slave_position": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "position": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "al_status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "al_status_code": {
+                "type": [
+                  "null",
+                  "boolean",
+                  "number",
+                  "string",
+                  "array",
+                  "object"
+                ],
+                "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+              },
+              "vendor_id": {
+                "type": [
+                  "null",
+                  "boolean",
+                  "number",
+                  "string",
+                  "array",
+                  "object"
+                ],
+                "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+              },
+              "product_code": {
+                "type": [
+                  "null",
+                  "boolean",
+                  "number",
+                  "string",
+                  "array",
+                  "object"
+                ],
+                "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+              },
+              "revision": {
+                "type": [
+                  "null",
+                  "boolean",
+                  "number",
+                  "string",
+                  "array",
+                  "object"
+                ],
+                "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+              },
+              "input_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "output_bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": true,
+            "description": "Identity and last observed AL state of a slave; available identity fields depend on the backend."
+          }
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slaves"
+      ]
+    },
+    "get_slave_info": {
+      "type": "object",
+      "properties": {
+        "slave_position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "al_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "al_status_code": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "vendor_id": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "product_code": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "revision": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "input_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true,
+      "description": "Identity and last observed AL state of a slave; available identity fields depend on the backend."
+    },
+    "test_slave_communication": {
+      "type": "object",
+      "properties": {
+        "slave_position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "responding": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string"
+        },
+        "device_type": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "sdo_error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slave_position",
+        "responding",
+        "state"
+      ]
+    },
+    "read_sdo": {
+      "type": "object",
+      "properties": {
+        "slave_position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "type": "string"
+        },
+        "subindex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "raw_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-fA-F]{2})*$",
+          "description": "Raw bytes encoded as hexadecimal octets."
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "value_encoding": {
+          "enum": [
+            "json_number",
+            "decimal_string"
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slave_position",
+        "index",
+        "subindex"
+      ]
+    },
+    "write_sdo": {
+      "type": "object",
+      "properties": {
+        "slave_position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "type": "string"
+        },
+        "subindex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "written": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "raw_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-fA-F]{2})*$",
+          "description": "Raw bytes encoded as hexadecimal octets."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slave_position",
+        "index",
+        "subindex",
+        "written",
+        "data_type",
+        "raw_hex"
+      ]
+    },
+    "set_slave_state": {
+      "type": "object",
+      "properties": {
+        "slave_position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requested": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "state_code": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "al_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "al_status_code": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "process_image_mapped": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slave_position",
+        "requested",
+        "state"
+      ]
+    },
+    "list_slaves": {
+      "type": "object",
+      "properties": {
+        "slaves": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "null",
+                "boolean",
+                "number",
+                "string",
+                "array",
+                "object"
+              ],
+              "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+            },
+            "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "slaves",
+        "count"
+      ]
+    },
+    "load_esi_file": {
+      "type": "object",
+      "properties": {
+        "filepath": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": true
+        },
+        "device_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "product_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "group": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "hint": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "filepath",
+        "vendor",
+        "device_count",
+        "matched",
+        "devices"
+      ]
+    },
+    "ping": {
+      "type": "object",
+      "required": [
+        "capabilities"
+      ],
+      "properties": {
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "backend",
+            "simulated",
+            "scope",
+            "device_verified",
+            "operations",
+            "prerequisites"
+          ],
+          "properties": {
+            "protocol": {
+              "const": "ethercat"
+            },
+            "backend": {
+              "type": "string"
+            },
+            "simulated": {
+              "type": "boolean"
+            },
+            "scope": {
+              "const": "backend_support"
+            },
+            "device_verified": {
+              "const": false
+            },
+            "operations": {
+              "type": "object",
+              "required": [
+                "read_pdo",
+                "write_pdo",
+                "scan_network",
+                "get_slave_info",
+                "test_slave_communication",
+                "read_sdo",
+                "write_sdo",
+                "set_slave_state",
+                "list_slaves",
+                "load_esi_file",
+                "ping"
+              ],
+              "properties": {
+                "read_pdo": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "write_pdo": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "scan_network": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "get_slave_info": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "test_slave_communication": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "read_sdo": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "write_sdo": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "set_slave_state": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "list_slaves": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "load_esi_file": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "ping": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "prerequisites": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    }
   }
 }

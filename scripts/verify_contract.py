@@ -25,3 +25,12 @@ if ref.startswith("refs/tags/"):
     assert ref == "refs/tags/v" + project["version"], (
         "Release tag must match both package versions"
     )
+
+# Every advertised output is a self-contained copy of its reviewed result shape.
+for tool in source["tools"]:
+    shape_name = source["routes"][tool["name"]]["resultShape"]
+    shape = source["resultShapes"][shape_name]
+    assert shape and any(k in shape for k in ("type", "anyOf", "oneOf")), tool["name"]
+    assert tool["outputSchema"]["properties"]["data"] == {
+        "anyOf": [{"type": "null"}, shape]
+    }, f"Output schema differs from resultShapes: {tool['name']}"

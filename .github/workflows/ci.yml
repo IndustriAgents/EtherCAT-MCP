@@ -106,3 +106,22 @@ jobs:
 
       - name: Tests (pytest)
         run: uv run --locked pytest
+
+  packages:
+    name: Installed wheel and npm contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0; same pin as release
+        with:
+          node-version: '22'
+      - run: python scripts/verify_contract.py
+      - run: python scripts/prepare_npm.py
+      - run: npm --prefix npm test
+      - run: npm pack --ignore-scripts
+        working-directory: npm
+      - run: python scripts/smoke_packages.py python
+      - run: python scripts/smoke_packages.py npm
+      - run: uvx twine check --strict dist/*

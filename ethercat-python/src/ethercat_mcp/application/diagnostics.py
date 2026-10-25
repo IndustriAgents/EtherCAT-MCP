@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import StrictInt
 
 from ethercat_mcp._version import __version__
+from ethercat_mcp.domain.capabilities import capabilities
 
 
 class DiagnosticsOperations:
@@ -39,6 +40,11 @@ class DiagnosticsOperations:
                 "state_change_enabled": self.config.state_change_enabled,
                 "slave_aliases": self.resources.slave_map.count(),
                 "slave_map_error": self.resources.slave_map.error,
+                "capabilities": capabilities(
+                    self.master.describe().get("backend", "unknown"),
+                    writes_enabled=self.config.writes_enabled,
+                    extra_gate=self.config.state_change_enabled,
+                ),
             }
         )
 

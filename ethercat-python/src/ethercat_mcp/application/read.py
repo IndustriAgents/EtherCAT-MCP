@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import StrictInt
 
-from ethercat_mcp.codec import decode_value, parse_int
+from ethercat_mcp.codec import decode_value, normalize_data_type, parse_int
 
 
 class ReadOperations:
@@ -34,8 +34,9 @@ class ReadOperations:
             position = self._position(slave_position)
             idx = parse_int(index, "index", minimum=0, maximum=65535)
             sub = parse_int(subindex, "subindex", minimum=0, maximum=255)
+            dtype = normalize_data_type(data_type)
             raw, meta = await self.master.read_sdo(position, idx, sub)
-            decoded = decode_value(raw, data_type)
+            decoded = decode_value(raw, dtype)
         except Exception as exc:
             return self._err(str(exc), meta)
         return self._ok(

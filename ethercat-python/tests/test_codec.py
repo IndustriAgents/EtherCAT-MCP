@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import struct
+
 import pytest
 
 from ethercat_mcp.codec import decode_value, encode_value, parse_bytes, parse_int
@@ -70,3 +72,35 @@ def test_decode_without_type_infers_unsigned() -> None:
 def test_decode_length_mismatch() -> None:
     with pytest.raises(ValueError, match="needs 4"):
         decode_value(b"\x01", "UINT32")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("dtype,fmt", [("REAL32", "<f"), ("REAL64", "<d")])
+def test_nonfinite_device_values_do_not_escape_into_json(value, dtype, fmt):
+    raw = struct.pack(fmt, value)
+    with pytest.raises(ValueError, match="non-finite"):
+        decode_value(raw, dtype)
+    assert decode_value(raw, "BYTES")["value"] == list(raw)
+
+
+def test_noncanonical_boolean_is_not_invented_as_true():
+    with pytest.raises(ValueError, match="BOOL"):
+        decode_value(b"\x02", "BOOL")
+
+
+@pytest.mark.parametrize(
+    "dtype,fmt,value",
+    [
+        ("INT64", "<q", -(1 << 63)),
+        ("UINT64", "<Q", (1 << 64) - 1),
+        ("INT64", "<q", -(1 << 53)),
+        ("UINT64", "<Q", 1 << 53),
+        ("INT64", "<q", -((1 << 53) - 1)),
+        ("UINT64", "<Q", (1 << 53) - 1),
+    ],
+)
+def test_64_bit_values_preserve_exact_json_integer_precision(dtype, fmt, value):
+    result = decode_value(struct.pack(fmt, value), dtype)
+    unsafe = abs(value) > (1 << 53) - 1
+    assert result["value"] == (str(value) if unsafe else value)
+    assert result["value_encoding"] == ("decimal_string" if unsafe else "json_number")
