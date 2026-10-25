@@ -286,3 +286,33 @@ async def test_facade_gates_and_rescan_guard() -> None:
         assert info["responding"] is True and info["coe"]["ok"] is False
     finally:
         await master.close()
+
+
+def test_large_sdo_upload_uses_explicit_native_buffer_and_returns_whole_object(backend):
+    backend.scan()
+    slave = backend._slaves[3]
+    value = bytes(range(256)) * 4
+    slave._dev.objects[(0x8000, 6)][0] = value
+    assert backend.read_sdo(3, 0x8000, 6, max_bytes=1024) == value
+    assert slave.last_upload_size == 1024
+    with pytest.raises(EthercatMasterError, match="exceeded max_bytes"):
+        backend.read_sdo(3, 0x8000, 6, max_bytes=256)
+
+
+@pytest.mark.parametrize("size", [0, -1, 4097, True, 1.0, "1024"])
+def test_invalid_upload_size_never_accesses_native_slave(backend, size):
+    with pytest.raises(ValueError, match="max_bytes"):
+        backend.read_sdo(3, 0x1000, 0, max_bytes=size)
+    assert not backend.scanned
+
+
+def test_large_upload_deadline_budget_prevents_native_dispatch(backend):
+    from ethercat_mcp.ec_master import DEFAULT_SDO_TIMEOUT_US, CallToken
+
+    backend.scan()
+    slave = backend._slaves[3]
+    before = len(slave.sdo_calls)
+    with pytest.raises(EthercatMasterError, match="do not fit"):
+        backend.read_sdo(3, 0x8000, 6, max_bytes=4096, token=CallToken(1))
+    assert len(slave.sdo_calls) == before
+    assert backend._master.sdo_read_timeout == DEFAULT_SDO_TIMEOUT_US

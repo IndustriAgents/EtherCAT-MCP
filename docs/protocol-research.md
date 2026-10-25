@@ -27,7 +27,7 @@ separation of application operations, native execution and uncertain outcomes.
 | Inspect: `get_slave_info`, `test_slave_communication` | Native identity/state, optional CoE diagnostic | Reads only; a CoE failure is not invented as a value | Fake PySOEM and mock tests |
 | Read process image: `read_pdo` | Fresh cycle, state, WKC and bit-layout checks | Invalid/stale cycle fails; aliases preserve addressing | Native backend tests; real NIC and cycle timing not verified |
 | Write process image: `write_pdo` | Gated native write with cycle confirmation | No replay after possible send; WKC does not verify an actuator | Existing cancellation/send-count and unknown-outcome tests |
-| CoE: `read_sdo` | Typed decoding; type validation now occurs before native access | Invalid type causes zero native calls; nonfinite REAL and invalid BOOL fail explicitly | New codec/tool regressions; raw BYTES remains available |
+| CoE: `read_sdo` | Typed full-object upload with explicit 1..4096-byte buffer | Validate type/buffer before access; budget selected size; reject overflow without truncation | Native-size, mock, real MCP and cancellation tests; raw BYTES remains available |
 | CoE: `write_sdo` | Encoded and gated native download | Single dispatch, abort/error classification | Native SDO timeout/abort tests |
 | State: `set_slave_state` | Explicit native state request and verification | Both write and state gates required | Native and MCP gate tests |
 | Metadata: `list_slaves`, `load_esi_file` | Local alias map and bounded ESI parsing | No proof of reachability from metadata | Map/parser tests |
@@ -71,3 +71,26 @@ No compatible EtherCAT interface, slaves, approved bus topology or authorized
 hardware test environment was supplied. Hardware acceptance must verify each
 supported device's state transitions, PDO mapping, WKC, watchdog and timing under
 load. Software tests do not establish hard real-time or functional safety claims.
+
+## Second-pass larger SDO uploads and roadmap
+
+The pinned [PySOEM 1.1.12 binding](https://github.com/bnjmnp/pysoem/blob/1.1.12/src/pysoem/pysoem.pyx)
+implements `sdo_read(..., size=0)` with a 256-byte default buffer, allocating the
+requested size otherwise and returning the native actual byte count after error
+checks. The [public slave API](https://pysoem.readthedocs.io/en/stable/cdef_slave.html)
+documents this size argument for larger objects. The MCP now exposes it as
+`max_bytes` (1..4096, default 256). This additive parameter applies to canonical
+and legacy calls and both backends; it requests a complete upload, not a prefix.
+Fixed-type length constraints are checked before bus access. Native timeout
+budgeting uses the selected upper bound; oversized backend results fail rather
+than truncate. The same native lock survives caller cancellation until the
+actual upload returns. Successful metadata records the buffer bound/completeness.
+
+Prioritized remaining work:
+
+1. Hardware acceptance of actual mailbox sizes, segmented transfers, aborts and
+   deadlines, alongside existing PDO state/WKC/watchdog timing requirements.
+2. Bounded device-profile diagnostics and EMCY observation using documented native
+   APIs, with explicit loss/freshness and device-specific interpretation.
+3. Evaluate distributed-clock engineering and FoE only with concrete commissioning
+   workflows, supported device profiles and operational approval requirements.

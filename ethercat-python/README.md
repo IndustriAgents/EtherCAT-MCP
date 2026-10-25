@@ -72,3 +72,13 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 `tests/test_integration_mock.py` starts `../ethercat-mock-slave/ethercat_mock_slave.py` on a free loopback port and drives `ethercat-mcp` over stdio with the MCP client SDK. Nothing in the suite opens a network interface.
+
+## Bounded larger CoE uploads
+
+`read_sdo` accepts `max_bytes` from 1 to 4096 (default 256), passed to the
+supported PySOEM reading-buffer parameter. Use `data_type: "BYTES"` for opaque
+objects, or a matching supported type. Fixed-width types must fit the chosen
+buffer before native access. The limit sizes the whole-object upload buffer;
+results are never silently truncated. Larger transfers require a sufficient
+existing call deadline for the conservative mailbox budget; no automatic retry
+is added. Successful metadata includes the selected `max_bytes` and `complete`.

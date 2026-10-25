@@ -274,6 +274,7 @@ class FakeSlave:
 
     def sdo_read(self, index, subindex, size=0, ca=False, *, release_gil=None):
         self.sdo_calls.append(("read", index, subindex, release_gil))
+        self.last_upload_size = size
         self.timeouts_seen.append(self._master.sdo_read_timeout)
         self._mailbox()
         if (index, subindex) not in self._dev.objects:

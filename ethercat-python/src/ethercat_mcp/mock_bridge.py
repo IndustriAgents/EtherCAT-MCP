@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Any
 
+from .codec import validate_upload_size
 from .config import EthercatConfig
 from .ec_master import (
     OP_STATE,
@@ -277,14 +278,20 @@ class MockBridgeBackend:
             "outcome": WRITTEN,
         }
 
-    def read_sdo(self, position: int, index: int, subindex: int, token: CallToken | None = None) -> bytes:
+    def read_sdo(
+        self, position: int, index: int, subindex: int, token: CallToken | None = None, *, max_bytes: int = 256
+    ) -> bytes:
+        max_bytes = validate_upload_size(max_bytes)
         token = _token(token)
         with locked(self._lock, token):
             self._require_position(position)
             data = self._request(
                 {"op": "read_sdo", "position": position, "index": index, "subindex": subindex}, token=token
             )
-        return self._hex_field(data, "data_hex")
+        raw = self._hex_field(data, "data_hex")
+        if len(raw) > max_bytes:
+            raise EthercatMasterError("SDO upload exceeded max_bytes; no partial value is returned")
+        return raw
 
     def write_sdo(self, position: int, index: int, subindex: int, data: bytes, token: CallToken | None = None) -> None:
         token = _token(token)
