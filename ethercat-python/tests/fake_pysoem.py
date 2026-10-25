@@ -1,4 +1,4 @@
-"""In-memory stand-in for the parts of PySOEM 1.1.12 that PysoemBackend uses.
+"""In-memory stand-in for the parts of PySOEM 1.1.13 that PysoemBackend uses.
 
 Real EtherCAT needs raw Ethernet, root and hardware, so the PySOEM code paths
 are tested against this fake. It mirrors PySOEM's names and signatures and the

@@ -7,6 +7,7 @@ the attribute, instead of the server breaking in subtle ways.
 from __future__ import annotations
 
 import inspect
+from importlib.metadata import version
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -75,3 +76,10 @@ def test_request_cancel_scope_internals_exist() -> None:
     assert "_in_flight" in inspect.getsource(BaseSession.__init__), "BaseSession._in_flight moved"
     fields = getattr(RequestContext, "__dataclass_fields__", {})
     assert {"request_id", "session"} <= set(fields), "RequestContext no longer has request_id/session"
+
+
+def test_pysoem_runtime_includes_released_gil_sdo_length_fix():
+    # 1.1.12 loses native size_inout in its GIL-releasing helper and returns
+    # allocation capacity. Dependency resolution must never restore that floor.
+    installed = tuple(int(part) for part in version("pysoem").split(".")[:3])
+    assert installed >= (1, 1, 13), "PySOEM 1.1.13+ is required for exact-length SDO uploads"

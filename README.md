@@ -28,7 +28,7 @@ servers (Modbus, S7comm, ...), and every tool returns the suite's
 
 > **Status: early, not yet verified on hardware.** The PySOEM paths (scan, SDO
 > read/write, process image and cyclic exchange, state changes) are written
-> against PySOEM 1.1.12's API and unit-tested against a fake `pysoem` module,
+> against PySOEM 1.1.13's API and unit-tested against a fake `pysoem` module,
 > because CI has no EtherCAT hardware. End-to-end tests drive the real server
 > over stdio against the mock slave. Try it on a bench before anything else,
 > and read [Known limitations](#known-limitations).
@@ -421,7 +421,7 @@ transport (`ETHERCAT_BACKEND=mock`) instead of a network interface.
 
 ## Known limitations
 
-- **Not yet run on hardware.** The PySOEM code paths follow PySOEM 1.1.12's API
+- **Not yet run on hardware.** The PySOEM code paths follow PySOEM 1.1.13's API
   and are tested against a fake `pysoem`, not against real slaves.
 - **Minimal master.** No distributed clocks, no PDO remapping (slaves keep the
   mapping SOEM reads from CoE or SII), no FoE/EoE, no cable redundancy, and no

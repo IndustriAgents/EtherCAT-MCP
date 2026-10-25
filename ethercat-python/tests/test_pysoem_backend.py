@@ -288,10 +288,11 @@ async def test_facade_gates_and_rescan_guard() -> None:
         await master.close()
 
 
-def test_large_sdo_upload_uses_explicit_native_buffer_and_returns_whole_object(backend):
+@pytest.mark.parametrize("length", [513, 1024])
+def test_large_sdo_upload_uses_explicit_native_buffer_and_returns_whole_object(backend, length):
     backend.scan()
     slave = backend._slaves[3]
-    value = bytes(range(256)) * 4
+    value = (bytes(range(256)) * 4)[:length]
     slave._dev.objects[(0x8000, 6)][0] = value
     assert backend.read_sdo(3, 0x8000, 6, max_bytes=1024) == value
     assert slave.last_upload_size == 1024

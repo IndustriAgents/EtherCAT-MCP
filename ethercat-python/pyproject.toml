@@ -16,7 +16,8 @@ dependencies = [
     # The supported MCP 1.x floor uses typing helpers removed in Pydantic 2.13.
     "pydantic>=2.11.0,<2.13",
     "python-dotenv>=1.1.0",
-    "pysoem>=1.1.12",
+    # 1.1.13 fixes actual-length propagation for sdo_read(release_gil=True).
+    "pysoem>=1.1.13",
     "lxml>=4.9.3",
 ]
 

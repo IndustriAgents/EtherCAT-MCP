@@ -9,7 +9,7 @@ supported PySOEM and TCP mock backends, not every EtherCAT profile or device.
 | --- | --- | --- |
 | [PySOEM Master](https://pysoem.readthedocs.io/en/latest/master.html) | Online 1.1.14-dev1 documentation; `config_init`, `config_map`, process data, expected WKC, state checks | Scan, mapping, cyclic exchange and state verification are distinct responsibilities. |
 | [PySOEM CdefSlave](https://pysoem.readthedocs.io/en/latest/cdef_slave.html) | Online 1.1.14-dev1 documentation; SDO, watchdog, state and mailbox APIs | CoE is byte-oriented; a successful library call is not proof of a physical process outcome. |
-| [PySOEM source](https://github.com/bnjmnp/pysoem) | Repository reference; local lock pins 1.1.12 | Development documentation is not an upgrade instruction. Tests target the installed API and fake implementation. |
+| [PySOEM source](https://github.com/bnjmnp/pysoem) | Repository reference; local lock now pins 1.1.13 | Development documentation is not an upgrade instruction. Tests target the installed API and fake implementation. |
 | [ETG technology reference](https://www.ethercat.org/en/technology.html) | Access attempt returned HTTP 403 | No claim of standards conformance is based on inaccessible ETG material. |
 
 The native implementation uses a persistent process-data cycle and serializes
@@ -74,7 +74,7 @@ load. Software tests do not establish hard real-time or functional safety claims
 
 ## Second-pass larger SDO uploads and roadmap
 
-The pinned [PySOEM 1.1.12 binding](https://github.com/bnjmnp/pysoem/blob/1.1.12/src/pysoem/pysoem.pyx)
+The pinned [PySOEM 1.1.13 binding](https://github.com/bnjmnp/pysoem/blob/1.1.13/src/pysoem/pysoem.pyx)
 implements `sdo_read(..., size=0)` with a 256-byte default buffer, allocating the
 requested size otherwise and returning the native actual byte count after error
 checks. The [public slave API](https://pysoem.readthedocs.io/en/stable/cdef_slave.html)
@@ -85,6 +85,14 @@ Fixed-type length constraints are checked before bus access. Native timeout
 budgeting uses the selected upper bound; oversized backend results fail rather
 than truncate. The same native lock survives caller cancellation until the
 actual upload returns. Successful metadata records the buffer bound/completeness.
+
+Final source review identified an upstream defect in the previous 1.1.12 pin:
+the GIL-releasing helper received the returned-length variable by value. The
+outer binding could therefore return the buffer's capacity instead of the object
+length. [PySOEM 1.1.13 release notes](https://github.com/bnjmnp/pysoem/releases/tag/1.1.13)
+explicitly fix this path; its source passes the size pointer through correctly.
+The dependency floor and lock are raised to 1.1.13. GIL release remains enabled
+for scheduler responsiveness; no guessed trimming or padding is accepted.
 
 Prioritized remaining work:
 

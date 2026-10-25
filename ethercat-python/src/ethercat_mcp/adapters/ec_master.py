@@ -5,7 +5,7 @@ configuration (``ETHERCAT_BACKEND``), enforces the write and state-change gates,
 and runs the blocking backend calls in worker threads.
 
 ``PysoemBackend`` drives a real bus through PySOEM. The calls it makes are the
-ones PySOEM 1.1.12 exposes (``Master.open/config_init/config_map/read_state/
+ones PySOEM 1.1.13 exposes (``Master.open/config_init/config_map/read_state/
 send_processdata/receive_processdata``, ``CdefSlave.sdo_read/sdo_write/
 write_state/state_check`` and the ``input``/``output`` process-image views).
 """

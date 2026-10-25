@@ -76,7 +76,8 @@ uv run ruff check . && uv run ruff format --check .
 ## Bounded larger CoE uploads
 
 `read_sdo` accepts `max_bytes` from 1 to 4096 (default 256), passed to the
-supported PySOEM reading-buffer parameter. Use `data_type: "BYTES"` for opaque
+supported PySOEM reading-buffer parameter. PySOEM 1.1.13 or later is required
+for correct actual-length propagation while releasing the GIL. Use `data_type: "BYTES"` for opaque
 objects, or a matching supported type. Fixed-width types must fit the chosen
 buffer before native access. The limit sizes the whole-object upload buffer;
 results are never silently truncated. Larger transfers require a sufficient
