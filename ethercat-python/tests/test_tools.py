@@ -82,6 +82,55 @@ async def call(server: EthercatMCPServer, name: str, **arguments: Any) -> dict[s
     return envelope_from(await server.mcp.call_tool(name, arguments))
 
 
+@pytest.mark.anyio
+async def test_invalid_sdo_type_is_rejected_before_native_io(tmp_path):
+    server, fake = build(tmp_path)
+    called = []
+
+    async def read_sdo(*args):
+        called.append(args)
+        return b"\x00", {}
+
+    server.master.read_sdo = read_sdo
+    result = await call(server, "read_sdo", slave_position=0, index="0x1000", data_type="WIDGET")
+    assert not result["success"] and "data_type" in result["error"]
+    assert called == []
+
+
+@pytest.mark.anyio
+async def test_unsafe_64_bit_sdo_value_is_lossless_on_mcp_wire(tmp_path):
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    server, _ = build(tmp_path)
+
+    async def read_sdo(*args):
+        return bytes.fromhex("ffffffffffffffff"), {}
+
+    server.master.read_sdo = read_sdo
+    async with create_connected_server_and_client_session(server.mcp) as session:
+        result = await session.call_tool("read_sdo", {"slave_position": 0, "index": "0x2000", "data_type": "UINT64"})
+    envelope = result.structuredContent
+    assert json.loads(result.content[0].text) == envelope
+    assert envelope["data"]["value"] == "18446744073709551615"
+    assert envelope["data"]["value_encoding"] == "decimal_string"
+
+
+@pytest.mark.anyio
+async def test_capability_status_is_local_and_distinguishes_gates(tmp_path):
+    from jsonschema import Draft202012Validator
+
+    server, fake = build(tmp_path)
+    result = await call(server, "ping")
+    caps = result["data"]["capabilities"]
+    assert caps["scope"] == "backend_support" and caps["device_verified"] is False
+    assert caps["operations"]["read_sdo"]["supported"] is True
+    assert caps["operations"]["write_sdo"]["enabled"] is False
+    assert caps["operations"]["set_slave_state"]["enabled"] is False
+    assert server.master.backend._master is None
+    advertised = {t.name: t for t in await server.mcp.list_tools()}
+    Draft202012Validator(advertised["ping"].outputSchema).validate(result)
+
+
 @pytest.fixture
 def server(tmp_path: Path) -> Iterator[EthercatMCPServer]:
     srv, _ = build(tmp_path)

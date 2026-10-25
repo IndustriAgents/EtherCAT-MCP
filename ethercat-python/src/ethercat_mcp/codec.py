@@ -178,6 +178,7 @@ def decode_value(raw: bytes, data_type: str | None) -> dict[str, Any]:
         dtype = _UINT_BY_SIZE.get(len(raw))
         inferred = dtype is not None
     value: Any = None
+    encoding: str | None = None
     if dtype == "BYTES" or dtype is None:
         value = None if dtype is None else list(raw)
     elif dtype == "STRING":
@@ -187,12 +188,24 @@ def decode_value(raw: bytes, data_type: str | None) -> dict[str, Any]:
         if len(raw) != size:
             raise ValueError(f"Slave returned {len(raw)} bytes, but {dtype} needs {size}")
         value = struct.unpack(fmt, raw)[0]
+        if dtype.startswith("REAL") and not math.isfinite(value):
+            raise ValueError(f"Slave returned a non-finite {dtype}; read as BYTES to inspect the raw representation")
         if dtype == "BOOL":
+            if value not in (0, 1):
+                raise ValueError("Slave returned a BOOL other than 0 or 1")
             value = bool(value)
-    return {
+        if dtype in ("INT64", "UINT64"):
+            encoding = "json_number"
+            if abs(value) > (1 << 53) - 1:
+                value = str(value)
+                encoding = "decimal_string"
+    result = {
         "value": value,
         "data_type": dtype,
         "data_type_inferred": inferred,
         "raw_hex": raw.hex(),
         "size": len(raw),
     }
+    if encoding is not None:
+        result["value_encoding"] = encoding
+    return result

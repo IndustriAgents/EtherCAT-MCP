@@ -480,3 +480,6 @@ hardware, and use it to report vulnerabilities privately.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+See [protocol research, capability matrix and verification limits](docs/protocol-research.md)
+for the supported backend scope and agent workflow.

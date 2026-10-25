@@ -49,32 +49,17 @@ cmd = (
     if mode == "python"
     else ["node", "--", str(launcher)]
 )
-env = dict(os.environ)
-env.update(
-    {
-        "ETHERCAT_BACKEND": "mock",
-        "PROFINET_BACKEND": "none",
-        "PROFIBUS_BACKEND": "mock",
-        "MQTT_BROKER_URL": "mqtt://127.0.0.1:1",
-        "MODBUS_HOST": "127.0.0.1",
-        "MODBUS_PORT": "1",
-        "S7_HOST": "127.0.0.1",
-        "S7_PORT": "1",
-        "ENIP_HOST": "127.0.0.1",
-    }
-)
-for k in list(env):
-    if any(
-        w in k
-        for w in [
-            "WRITES_ENABLED",
-            "SYSTEM_CMDS_ENABLED",
-            "CONFIG_CMDS_ENABLED",
-            "STATE_CHANGE_ENABLED",
-            "POLICY_FILE",
-        ]
-    ):
-        env.pop(k, None)
+# Installed-artifact tests must not inherit a physical endpoint, policy or map.
+env = {
+    key: value for key, value in os.environ.items()
+    if not key.startswith(("ETHERCAT_", "PROFIBUS_", "PROFINET_"))
+    and key not in ("SLAVE_MAP_FILE", "DEVICE_MAP_FILE", "PYTHONPATH")
+}
+env.update({
+    "ETHERCAT_BACKEND": "mock", "ETHERCAT_MOCK_HOST": "127.0.0.1", "ETHERCAT_MOCK_PORT": "1",
+    "PROFIBUS_BACKEND": "mock", "PROFIBUS_MOCK_HOST": "127.0.0.1", "PROFIBUS_MOCK_PORT": "1",
+    "PROFINET_BACKEND": "none",
+})
 proc = subprocess.Popen(
     cmd,
     cwd="/tmp",
@@ -139,7 +124,10 @@ try:
     contract = json.loads((repo / "contract/tools.json").read_text())
     assert [t["name"] for t in tools] == [t["name"] for t in contract["tools"]]
     for actual, expected in zip(tools, contract["tools"]):
-        assert actual["inputSchema"] == expected["inputSchema"]
+        for field in ("description", "inputSchema", "outputSchema"):
+            assert actual[field] == expected[field], (actual["name"], field)
+        for field, value in expected.get("annotations", {}).items():
+            assert actual["annotations"][field] == value, (actual["name"], field)
     route = next((name, r) for name, r in contract["routes"].items() if "selector" in r)
     send(
         {
@@ -154,6 +142,16 @@ try:
     )
     result = response(3)["result"]
     assert result["isError"] is True and result["structuredContent"]["success"] is False
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+    send({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "ping", "arguments": {}}})
+    status_result = response(4)["result"]
+    envelope = status_result["structuredContent"]
+    assert envelope["success"] is True and status_result.get("isError", False) is False
+    assert json.loads(status_result["content"][0]["text"]) == envelope
+    caps = envelope["data"]["capabilities"]
+    assert caps["protocol"] == "ethercat" and caps["backend"] == "mock"
+    assert caps["device_verified"] is False and caps["scope"] == "backend_support"
+    assert set(caps["operations"]) == {tool["name"] for tool in contract["tools"]}
     print(repo.name, mode, "OK", len(tools), "tools", flush=True)
 finally:
     proc.stdin.close()
